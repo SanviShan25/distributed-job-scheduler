@@ -5,7 +5,8 @@ A distributed background-job system built with Spring Boot 4 and Java 25.
 - **PostgreSQL** is the source of truth for every job and schedule.
 - **Redis** sorted sets act as the queue, so workers can pull jobs quickly and by priority.
 - **API** and **worker** run as separate profiles of the same jar and scale independently.
-- The system recovers from crashed workers, hung handlers, Redis data loss, and partial writes.
+- Every RUNNING job holds a **lease** (database clock) plus a **fencing token**. Crashed, stuck or partitioned workers are recovered when their lease expires, and a stale worker can never overwrite a newer result.
+- The system also recovers from hung handlers, Redis data loss and partial writes.
 - Delivery is **at-least-once**.
 
 Features: priorities, retries with exponential backoff and jitter, a dead-letter queue, per-job timeouts, delayed jobs, recurring (cron) schedules, idempotent submission, cancellation, paginated listing, retention, API-key auth, rate limiting, Prometheus metrics, a Grafana dashboard, and Swagger UI.
@@ -151,7 +152,7 @@ What the system does guarantee: **at most one result is recorded per attempt**, 
 | **Worker dies between `BZPOPMIN` and claim** | Same as above: the job is still QUEUED in Postgres but gone from Redis, so the sweeper restores it. | ~60–70 s |
 | **Duplicate pop** (same id in Redis twice, two workers pop it) | Only one conditional `claim` can succeed; the other is a no-op (`jobs_duplicate_skipped_total`). | — |
 | **Reaper racing a worker** (reads RUNNING, the worker then succeeds) | The reaper's update requires the state it read (RUNNING, same worker and token), so it changes 0 rows and does nothing. | — |
-| **Rolling deploy / scale-down** (SIGTERM) | `WorkerLoop` (a `SmartLifecycle`) stops polling immediately and lets in-flight jobs run for `shutdown-grace-seconds` (25 s). After that it interrupts them and puts them back to QUEUED **without charging the attempt**. The heartbeat stops only after the drain. Compose allows `stop_grace_period: 30s`. | 25 s |
+| **Rolling deploy / scale-down** (SIGTERM) | `WorkerLoop` (a `SmartLifecycle`) stops polling immediately and lets in-flight jobs run for `shutdown-grace-seconds` (25 s). After that it interrupts them and puts them back to QUEUED **without charging the attempt**. Draining jobs keep renewing their leases, so the reaper never requeues them mid-drain. Compose allows `stop_grace_period: 30s`. | 25 s |
 | **Duplicate submission** (client retry) | `Idempotency-Key` header: the unique column plus `INSERT … ON CONFLICT DO NOTHING` returns the original job with `200`. | — |
 | **Two API instances firing the same cron** | `SELECT … FOR UPDATE SKIP LOCKED` on due schedules, plus the per-fire idempotency key `schedule:{id}:{fireTime}`. | — |
 

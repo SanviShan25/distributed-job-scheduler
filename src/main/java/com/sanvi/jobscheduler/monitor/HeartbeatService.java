@@ -16,9 +16,10 @@ import com.sanvi.jobscheduler.worker.WorkerLoop;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Keeps {@code worker:<id>} alive in Redis. Runs in a lower lifecycle phase than {@link WorkerLoop}:
- * it starts before the worker threads and stops only after they have drained, so the Reaper never
- * mistakes a shutting-down worker with running jobs for a dead one.
+ * Keeps {@code worker:<id>} alive in Redis for visibility: the {@code workers_alive} gauge and the
+ * Reaper's "worker lost" vs "lease expired" label. It is never a recovery trigger; job recovery is
+ * driven solely by lease expiry. Runs in a lower lifecycle phase than {@link WorkerLoop}, so a draining
+ * worker still shows as alive until its in-flight jobs finish.
  */
 @Component
 @Profile("worker")
