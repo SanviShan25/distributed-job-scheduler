@@ -1,0 +1,6 @@
+server:
+  port: ${PORT:8081}
+
+worker:
+  id: ${WORKER_ID:worker-${server.port}}
+  concurrency: ${WORKER_CONCURRENCY:4}

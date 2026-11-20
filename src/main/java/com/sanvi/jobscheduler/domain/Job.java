@@ -1,0 +1,30 @@
+package com.sanvi.jobscheduler.domain;
+
+import java.time.Instant;
+import java.util.UUID;
+
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+@Entity @Table(name = "jobs")
+@Getter @Setter @NoArgsConstructor
+public class Job {
+    @Id private UUID id;
+    private String type;
+    private String payload;
+    private int priority;
+    @Enumerated(EnumType.STRING) private JobStatus status;
+    private int attempts;
+    private int maxAttempts;
+    private String workerId;
+    private String lastError;
+    private Instant runAt;
+    private Instant createdAt;
+    private Instant updatedAt;
+}

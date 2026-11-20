@@ -1,0 +1,17 @@
+spring:
+  task:
+    scheduling:
+      pool:
+        size: 4
+      thread-name-prefix: sched-
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5433/jobs
+    username: jobs
+    password: jobs
+  jpa:
+    hibernate.ddl-auto: validate
+  data.redis:
+    host: localhost
+    port: 6379
+management:
+  endpoints.web.exposure.include: health,prometheus

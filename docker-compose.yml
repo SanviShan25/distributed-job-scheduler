@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: jobs
+      POSTGRES_USER: jobs
+      POSTGRES_PASSWORD: jobs
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobs -d jobs"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: api
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/jobs
+      SPRING_DATASOURCE_USERNAME: jobs
+      SPRING_DATASOURCE_PASSWORD: jobs
+      SPRING_DATA_REDIS_HOST: redis
+    ports: ["8080:8080"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: worker
+      PORT: "8080"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/jobs
+      SPRING_DATASOURCE_USERNAME: jobs
+      SPRING_DATASOURCE_PASSWORD: jobs
+      SPRING_DATA_REDIS_HOST: redis
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-4}"
+    entrypoint:
+      - sh
+      - -c
+      - export WORKER_ID="$$(hostname)"; exec java -jar /app/app.jar
+    expose: ["8080"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    depends_on:
+      - api
+      - worker
+
+  grafana:
+    image: grafana/grafana
+    ports: ["3000:3000"]
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
