@@ -4,14 +4,78 @@ spring:
       pool:
         size: 4
       thread-name-prefix: sched-
+  lifecycle:
+    # WorkerLoop blocks for up to worker.shutdown-grace-seconds (+5s) while draining.
+    timeout-per-shutdown-phase: 40s
+  autoconfigure:
+    # API-key auth only; no in-memory user / generated password.
+    exclude: org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
+  # All credentials come from the environment (see .env.example). Defaults are for local dev only
+  # and contain no secrets.
   datasource:
-    url: jdbc:postgresql://127.0.0.1:5433/jobs
-    username: jobs
-    password: jobs
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5433/jobs}
+    username: ${DB_USER:jobs}
+    password: ${DB_PASSWORD:}
   jpa:
     hibernate.ddl-auto: validate
+    open-in-view: false
   data.redis:
-    host: localhost
-    port: 6379
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    lettuce:
+      pool:
+        # Blocking BZPOPMIN calls each need a dedicated connection; pool them.
+        enabled: true
+        max-active: 32
+        max-idle: 32
 management:
   endpoints.web.exposure.include: health,prometheus
+
+logging:
+  structured:
+    format:
+      console: ecs
+    ecs:
+      service:
+        name: jobscheduler
+
+security:
+  # Comma-separated list; required for the api profile.
+  api-keys: ${API_KEYS:}
+  rate-limit:
+    enabled: true
+    capacity: 200
+    refill-per-second: 50
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+worker:
+  default-timeout-seconds: 300
+  lease-seconds: 30
+  lease-renew-interval: 10s
+  shutdown-grace-seconds: 25
+  base-backoff-seconds: 1
+  max-backoff-seconds: 300
+  poll-timeout: 2s
+
+scheduler:
+  retention-days: 7
+  retention-batch-size: 1000
+  retention-interval: 1h
+  cancel-hint-ttl: 1h
+  max-schedule-ahead: 365d
+  schedules:
+    poll-interval: 1s
+    batch-size: 100
+  sweeper:
+    stale-after: 60s
+    recheck-delay: 2s
+    page-size: 500
+    max-candidates: 50000
+    lock-ttl: 60s
+  mover:
+    batch-size: 1000
+    lock-ttl: 5s

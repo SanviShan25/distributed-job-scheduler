@@ -1,23 +1,28 @@
+# Credentials come from .env (copy .env.example). Postgres, Redis and the actuator/management port are
+# NOT published to the host; see docker-compose.override.yml for an opt-in dev setup.
 services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: jobs
-      POSTGRES_USER: jobs
-      POSTGRES_PASSWORD: jobs
-    ports: ["5433:5432"]
+      POSTGRES_DB: ${POSTGRES_DB:-jobs}
+      POSTGRES_USER: ${POSTGRES_USER:-jobs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U jobs -d jobs"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 10
 
   redis:
     image: redis:7
-    ports: ["6379:6379"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    # AOF persistence: queue state survives a Redis restart (Postgres remains the source of truth).
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes: [redisdata:/data]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -28,11 +33,17 @@ services:
       dockerfile: Dockerfile
     environment:
       SPRING_PROFILES_ACTIVE: api
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/jobs
-      SPRING_DATASOURCE_USERNAME: jobs
-      SPRING_DATASOURCE_PASSWORD: jobs
-      SPRING_DATA_REDIS_HOST: redis
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-jobs}
+      DB_USER: ${POSTGRES_USER:-jobs}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      API_KEYS: ${API_KEYS:?set API_KEYS in .env}
+      SECURITY_RATE_LIMIT_CAPACITY: "${RATE_LIMIT_CAPACITY:-200}"
+      SECURITY_RATE_LIMIT_REFILL_PER_SECOND: "${RATE_LIMIT_REFILL_PER_SECOND:-50}"
+      MANAGEMENT_PORT: "9091"
     ports: ["8080:8080"]
+    expose: ["9091"]   # actuator: internal network only
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,16 +57,20 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: worker
       PORT: "8080"
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/jobs
-      SPRING_DATASOURCE_USERNAME: jobs
-      SPRING_DATASOURCE_PASSWORD: jobs
-      SPRING_DATA_REDIS_HOST: redis
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-jobs}
+      DB_USER: ${POSTGRES_USER:-jobs}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-4}"
+      MANAGEMENT_PORT: "9091"
     entrypoint:
       - sh
       - -c
       - export WORKER_ID="$$(hostname)"; exec java -jar /app/app.jar
-    expose: ["8080"]
+    expose: ["9091"]   # actuator: internal network only
+    # Must exceed worker.shutdown-grace-seconds (25s) so in-flight jobs can drain before SIGKILL.
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,14 +80,17 @@ services:
   prometheus:
     image: prom/prometheus
     volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
-    ports: ["9090:9090"]
+    ports: ["127.0.0.1:9090:9090"]
     depends_on:
       - api
       - worker
 
   grafana:
     image: grafana/grafana
-    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+    ports: ["127.0.0.1:3000:3000"]
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -81,3 +99,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

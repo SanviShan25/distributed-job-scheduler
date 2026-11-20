@@ -12,17 +12,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
 import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobStatus;
+import com.sanvi.jobscheduler.support.AbstractIntegrationTest;
 
-@SpringBootTest
-class JobRepositoryClaimTest {
-
-    @Autowired
-    private JobRepository repo;
+class JobRepositoryClaimTest extends AbstractIntegrationTest {
 
     @Test
     void onlyOneConcurrentClaimCanTransitionQueuedJobToRunning() throws Exception {
@@ -68,6 +63,6 @@ class JobRepositoryClaimTest {
         if (!start.await(5, TimeUnit.SECONDS)) {
             throw new IllegalStateException("timed out waiting to start concurrent claim");
         }
-        return repo.claim(jobId, workerId, Instant.now());
+        return repo.claim(jobId, workerId, UUID.randomUUID(), 30);
     }
 }

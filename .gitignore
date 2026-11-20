@@ -1,5 +1,6 @@
 HELP.md
 target/
+**/target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
@@ -31,3 +32,13 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Local secrets
+.env
+
+### OS / archive junk ###
+.DS_Store
+__MACOSX/
+
+### Tool output ###
+.github/modernize/
