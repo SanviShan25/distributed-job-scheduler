@@ -39,6 +39,8 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       API_KEYS: ${API_KEYS:?set API_KEYS in .env}
+      SECURITY_RATE_LIMIT_CAPACITY: "${RATE_LIMIT_CAPACITY:-200}"
+      SECURITY_RATE_LIMIT_REFILL_PER_SECOND: "${RATE_LIMIT_REFILL_PER_SECOND:-50}"
       MANAGEMENT_PORT: "9091"
     ports: ["8080:8080"]
     expose: ["9091"]   # actuator: internal network only

@@ -1,69 +1,136 @@
-POST http://localhost:8080/jobs
+### Distributed Job Scheduler — sample requests (VS Code REST Client / IntelliJ HTTP Client)
+# Set apiKey to one of the values in API_KEYS (.env). Request names let later requests reuse
+# ids from earlier responses, e.g. {{submit.response.body.id}}.
+
+@baseUrl = http://localhost:8080
+@apiKey = change-me-api-key
+
+### Submit a job (201 Created)
+# @name submit
+POST {{baseUrl}}/jobs
 Content-Type: application/json
+X-API-Key: {{apiKey}}
 
 { "type": "EMAIL", "payload": "hello", "priority": 1 }
 
-###
-POST http://localhost:8080/jobs
+### Get the job just submitted
+GET {{baseUrl}}/jobs/{{submit.response.body.id}}
+X-API-Key: {{apiKey}}
+
+### Submit a job that always fails (ends DEAD after 3 attempts)
+# @name failing
+POST {{baseUrl}}/jobs
 Content-Type: application/json
+X-API-Key: {{apiKey}}
 
 { "type": "EMAIL", "payload": "fail", "priority": 5, "maxAttempts": 3 }
 
-###
-GET http://localhost:8080/jobs?status=DEAD
-
-###
-
-GET http://localhost:8080/jobs?status=QUEUED
-
-###
-
-GET http://localhost:8080/jobs?status=SUCCEEDED
-
-###
-
-POST http://localhost:8080/jobs
+### Slow job with a short timeout (times out, retried, then DEAD)
+POST {{baseUrl}}/jobs
 Content-Type: application/json
+X-API-Key: {{apiKey}}
 
-{ "type": "EMAIL", "payload": "delayMs=3000", "priority": 1 }
+{ "type": "EMAIL", "payload": "delayMs=10000", "timeoutSeconds": 2, "maxAttempts": 2 }
 
-###
-
-GET http://localhost:8080/jobs/stats
-
-###
-GET http://localhost:8080/jobs/b49a7ed6-e2ea-4f0a-9b46-1d315b08b56c
-
-
-### Job 1
-POST http://localhost:8080/jobs
+### Delayed job: run in 60 seconds (status SCHEDULED)
+# @name delayed
+POST {{baseUrl}}/jobs
 Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{ "type": "EMAIL", "payload": "later", "delaySeconds": 60 }
+
+### Delayed job at an absolute time (ISO-8601)
+POST {{baseUrl}}/jobs
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{ "type": "EMAIL", "payload": "at a time", "runAt": "2030-01-01T09:00:00Z" }
+
+### Idempotent submit: send twice -> 201 then 200 with the same job
+POST {{baseUrl}}/jobs
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+Idempotency-Key: order-{{$randomInt 1 1000000}}
+
+{ "type": "EMAIL", "payload": "charge customer" }
+
+### Cancel the delayed job (200, CANCELLED)
+POST {{baseUrl}}/jobs/{{delayed.response.body.id}}/cancel
+X-API-Key: {{apiKey}}
+
+### List jobs: paginated, filterable (status may repeat)
+GET {{baseUrl}}/jobs?status=DEAD&status=SUCCEEDED&type=EMAIL&page=0&size=20
+X-API-Key: {{apiKey}}
+
+### List jobs created in a time window
+GET {{baseUrl}}/jobs?createdFrom=2026-01-01T00:00:00Z&createdTo=2030-01-01T00:00:00Z
+X-API-Key: {{apiKey}}
+
+### Dead-letter jobs
+GET {{baseUrl}}/jobs/dead
+X-API-Key: {{apiKey}}
+
+### Requeue a DEAD job (run after the failing job is DEAD)
+POST {{baseUrl}}/jobs/{{failing.response.body.id}}/requeue
+X-API-Key: {{apiKey}}
+
+### Counts by status and successes by worker
+GET {{baseUrl}}/jobs/stats
+X-API-Key: {{apiKey}}
+
+### ------------------------------------------------------------------ schedules
+
+### Create a recurring schedule (5- or 6-field cron, or @hourly/@daily/...)
+# @name schedule
+POST {{baseUrl}}/schedules
+Content-Type: application/json
+X-API-Key: {{apiKey}}
 
 {
+  "name": "heartbeat-email-{{$randomInt 1 1000000}}",
+  "cron": "*/1 * * * *",
+  "timezone": "UTC",
   "type": "EMAIL",
-  "payload": "throughput-test-1",
-  "priority": 1
-}
-
-###
-POST http://localhost:8080/jobs
-Content-Type: application/json
-
-{
-  "type": "EMAIL",
-  "payload": "throughput-test-2",
-  "priority": 2
-}
-
-###
-POST http://localhost:8080/jobs
-Content-Type: application/json
-
-{
-  "type": "EMAIL",
-  "payload": "throughput-test-3",
+  "payload": "scheduled run",
   "priority": 3
 }
 
-###
-GET http://localhost:8080/jobs/stats
+### List schedules
+GET {{baseUrl}}/schedules?page=0&size=20
+X-API-Key: {{apiKey}}
+
+### Get one schedule
+GET {{baseUrl}}/schedules/{{schedule.response.body.id}}
+X-API-Key: {{apiKey}}
+
+### Change the cron expression (partial update)
+PATCH {{baseUrl}}/schedules/{{schedule.response.body.id}}
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{ "cron": "0 */5 * * * *", "timezone": "Asia/Kolkata" }
+
+### Pause
+POST {{baseUrl}}/schedules/{{schedule.response.body.id}}/pause
+X-API-Key: {{apiKey}}
+
+### Resume (next run is computed from now; missed runs are skipped)
+POST {{baseUrl}}/schedules/{{schedule.response.body.id}}/resume
+X-API-Key: {{apiKey}}
+
+### Delete (existing job runs are kept)
+DELETE {{baseUrl}}/schedules/{{schedule.response.body.id}}
+X-API-Key: {{apiKey}}
+
+### ------------------------------------------------------------------ errors
+
+### Missing API key -> 401 problem+json
+GET {{baseUrl}}/jobs/stats
+
+### Validation error -> 400 problem+json
+POST {{baseUrl}}/jobs
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{ "type": "EMAIL", "priority": 42 }

@@ -7,13 +7,20 @@ JOB_DELAY_MS="${JOB_DELAY_MS:-200}"
 CONCURRENCY="${CONCURRENCY:-20}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
 BASE_URL="${BASE_URL%/}"
+API_KEY="${API_KEY:-}"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
   exit 1
 }
 
-for tool in curl jq xargs seq awk; do
+[[ -n "$API_KEY" ]] || fail "set API_KEY to one of the keys in API_KEYS (.env)"
+
+api_get() {
+  curl --silent --show-error --fail -H "X-API-Key: $API_KEY" "$BASE_URL$1"
+}
+
+for tool in curl jq xargs seq awk bash; do
   command -v "$tool" >/dev/null 2>&1 || fail "required command not found: $tool"
 done
 [[ "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]] || fail "JOB_COUNT must be a positive integer"
@@ -21,7 +28,7 @@ done
 [[ "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || fail "CONCURRENCY must be a positive integer"
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail "TIMEOUT_SECONDS must be a positive integer"
 
-baseline_stats="$(curl --silent --show-error --fail "$BASE_URL/jobs/stats")" \
+baseline_stats="$(api_get /jobs/stats)" \
   || fail "could not read baseline stats from $BASE_URL/jobs/stats"
 baseline_succeeded="$(jq -er '(.byStatus.SUCCEEDED // 0) | tonumber' <<<"$baseline_stats")" \
   || fail "baseline stats did not contain a numeric byStatus.SUCCEEDED count"
@@ -30,21 +37,40 @@ baseline_dead="$(jq -er '(.byStatus.DEAD // 0) | tonumber' <<<"$baseline_stats")
 baseline_terminal=$((baseline_succeeded + baseline_dead))
 
 response_file="$(mktemp "${TMPDIR:-/tmp}/jobscheduler-load.XXXXXX")"
-trap 'rm -f "$response_file"' EXIT
-export BASE_URL JOB_DELAY_MS
+throttle_file="$(mktemp "${TMPDIR:-/tmp}/jobscheduler-429.XXXXXX")"
+trap 'rm -f "$response_file" "$throttle_file"' EXIT
+export BASE_URL JOB_DELAY_MS API_KEY throttle_file
 
+# POST /jobs is rate limited per API key (security.rate-limit.*). A 429 is retried after a short
+# pause and counted; raise RATE_LIMIT_CAPACITY / RATE_LIMIT_REFILL_PER_SECOND in .env to avoid it.
 start_seconds="$(date +%s)"
-if ! seq 1 "$JOB_COUNT" | xargs -P "$CONCURRENCY" -I '{}' sh -c '
+if ! seq 1 "$JOB_COUNT" | xargs -P "$CONCURRENCY" -I '{}' bash -c '
   priority=$((($1 % 5) + 1))
-  curl --silent --show-error --fail \
-    -H "Content-Type: application/json" \
-    -d "{\"type\":\"EMAIL\",\"payload\":\"delayMs=${JOB_DELAY_MS}\",\"priority\":${priority}}" \
-    "${BASE_URL}/jobs"
-  printf "\n"
+  for attempt in $(seq 1 60); do
+    response="$(curl --silent --show-error -w "\n%{http_code}" \
+      -H "Content-Type: application/json" -H "X-API-Key: ${API_KEY}" \
+      -d "{\"type\":\"EMAIL\",\"payload\":\"delayMs=${JOB_DELAY_MS}\",\"priority\":${priority}}" \
+      "${BASE_URL}/jobs")" || exit 1
+    code="${response##*$'"'"'\n'"'"'}"
+    body="${response%$'"'"'\n'"'"'*}"
+    if [[ "$code" == "201" || "$code" == "200" ]]; then
+      printf "%s\n" "$body"
+      exit 0
+    fi
+    if [[ "$code" == "429" ]]; then
+      echo 429 >> "$throttle_file"
+      sleep 1
+      continue
+    fi
+    printf "submission failed with HTTP %s: %s\n" "$code" "$body" >&2
+    exit 1
+  done
+  exit 1
 ' _ '{}' > "$response_file"; then
   fail "one or more job submissions failed"
 fi
 end_seconds="$(date +%s)"
+throttled_count="$(wc -l < "$throttle_file" | tr -d ' ')"
 
 submitted_count="$(jq -s '[.[] | select(.id != null)] | length' "$response_file")"
 [[ "$submitted_count" -eq "$JOB_COUNT" ]] || fail "submitted $submitted_count of $JOB_COUNT jobs"
@@ -55,11 +81,12 @@ submission_rate="$(awk -v count="$submitted_count" -v elapsed="$submission_secon
 printf 'Submitted %d jobs in %d seconds (%.2f submissions/sec).\n' \
   "$submitted_count" "$submission_seconds" "$submission_rate"
 printf 'Job payload delay: %s ms; concurrent requests: %s.\n' "$JOB_DELAY_MS" "$CONCURRENCY"
+printf 'Rate-limited (429) responses retried: %s.\n' "$throttled_count"
 
 deadline=$((start_seconds + TIMEOUT_SECONDS))
 terminal_growth=0
 while :; do
-  current_stats="$(curl --silent --show-error --fail "$BASE_URL/jobs/stats")" \
+  current_stats="$(api_get /jobs/stats)" \
     || fail "could not poll stats from $BASE_URL/jobs/stats"
   current_succeeded="$(jq -er '(.byStatus.SUCCEEDED // 0) | tonumber' <<<"$current_stats")" \
     || fail "stats response did not contain a numeric byStatus.SUCCEEDED count"
