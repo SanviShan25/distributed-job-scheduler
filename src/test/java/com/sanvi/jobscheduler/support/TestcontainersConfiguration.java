@@ -22,6 +22,7 @@ public class TestcontainersConfiguration {
 
     @Bean
     @ServiceConnection(name = "redis")
+    @SuppressWarnings("resource") // closed by Spring when the context shuts down
     GenericContainer<?> redisContainer() {
         return new GenericContainer<>(DockerImageName.parse("redis:7")).withExposedPorts(6379);
     }

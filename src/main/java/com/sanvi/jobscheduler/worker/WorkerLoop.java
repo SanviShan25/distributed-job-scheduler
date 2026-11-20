@@ -304,7 +304,8 @@ public class WorkerLoop implements SmartLifecycle {
                         nextRenewal = System.nanoTime() + renewEvery;
                     }
                 } catch (ExecutionException e) {
-                    return new Outcome(Kind.FAILED, e.getCause() == null ? e : e.getCause());
+                    Throwable cause = e.getCause();
+                    return new Outcome(Kind.FAILED, cause != null ? cause : e);
                 } catch (CancellationException e) {
                     return forceStopping ? Outcome.of(Kind.SHUTDOWN) : new Outcome(Kind.FAILED, e);
                 } catch (InterruptedException e) {

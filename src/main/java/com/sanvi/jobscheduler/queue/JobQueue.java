@@ -57,7 +57,7 @@ public class JobQueue {
         """, Long.class);
 
     /** Returns the subset of ARGV ids that are in neither queue:ready nor queue:delayed. */
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings("rawtypes")
     private static final DefaultRedisScript<List> FIND_MISSING = new DefaultRedisScript<>("""
         local missing = {}
         for _, id in ipairs(ARGV) do
