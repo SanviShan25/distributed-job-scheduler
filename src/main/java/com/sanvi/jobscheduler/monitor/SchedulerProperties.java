@@ -5,11 +5,21 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
-/** {@code scheduler.*} settings for the background maintenance tasks. */
+/**
+ * {@code scheduler.*} settings for the background maintenance tasks.
+ *
+ * @param retentionDays      SUCCEEDED/CANCELLED jobs older than this are deleted
+ * @param retentionBatchSize rows deleted per statement by the retention cleaner
+ */
 @ConfigurationProperties(prefix = "scheduler")
 public record SchedulerProperties(
     @DefaultValue Sweeper sweeper,
-    @DefaultValue Mover mover) {
+    @DefaultValue Mover mover,
+    @DefaultValue Schedules schedules,
+    @DefaultValue("7") int retentionDays,
+    @DefaultValue("1000") int retentionBatchSize,
+    @DefaultValue("1h") Duration cancelHintTtl,
+    @DefaultValue("365d") Duration maxScheduleAhead) {
 
     /**
      * @param staleAfter     only consider jobs untouched for this long (skips jobs mid-submit)
@@ -30,5 +40,11 @@ public record SchedulerProperties(
     public record Mover(
         @DefaultValue("1000") int batchSize,
         @DefaultValue("5s") Duration lockTtl) {
+    }
+
+    /** @param batchSize due schedules locked and fired per transaction */
+    public record Schedules(
+        @DefaultValue("1s") Duration pollInterval,
+        @DefaultValue("100") int batchSize) {
     }
 }

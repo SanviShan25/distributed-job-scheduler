@@ -4,6 +4,7 @@ scheduler:
   sweeper:
     recheck-delay: 100ms
     page-size: 50
+  retention-batch-size: 20
 
 logging:
   level:

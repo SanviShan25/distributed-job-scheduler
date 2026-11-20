@@ -1,6 +1,6 @@
 package com.sanvi.jobscheduler.api;
 
-import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -8,22 +8,24 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.context.annotation.Profile;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobStatus;
-import com.sanvi.jobscheduler.queue.JobQueue;
 import com.sanvi.jobscheduler.repo.JobRepository;
-import com.sanvi.jobscheduler.worker.JobHandlerRegistry;
-import com.sanvi.jobscheduler.worker.WorkerProperties;
 
-import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -34,61 +36,55 @@ import lombok.RequiredArgsConstructor;
 @RestController @RequestMapping("/jobs")
 @Profile("api") @RequiredArgsConstructor
 public class JobController {
-    public static final int MAX_PAYLOAD_BYTES = 64 * 1024;
+    public static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
+    private final JobService jobs;
     private final JobRepository repo;
-    private final JobQueue queue;
-    private final MeterRegistry metrics;
-    private final JobHandlerRegistry handlers;
-    private final WorkerProperties workerProperties;
 
     public record SubmitRequest(
         @NotBlank @Size(max = 100) String type,
-        @Size(max = MAX_PAYLOAD_BYTES, message = "payload must be at most 64 KB") String payload,
+        @Size(max = JobService.MAX_PAYLOAD_BYTES, message = "payload must be at most 64 KB") String payload,
         @Min(1) @Max(10) Integer priority,
         @Min(1) @Max(20) Integer maxAttempts,
-        @Min(1) @Max(86_400) Integer timeoutSeconds) {}
+        @Min(1) @Max(86_400) Integer timeoutSeconds,
+        /* ISO-8601 instant, e.g. 2026-01-01T10:00:00Z. Mutually exclusive with delaySeconds. */
+        Instant runAt,
+        @Min(0) @Max(31_536_000) Long delaySeconds) {}
 
     public record WorkerJobCount(String workerId, long count) {}
 
     public record JobStats(Map<JobStatus, Long> byStatus, List<WorkerJobCount> succeededByWorker) {}
 
+    /** 201 for a new job; 200 with the original job when the Idempotency-Key was seen before. */
     @PostMapping
-    public Job submit(@RequestBody @Valid SubmitRequest r) {
-        validate(r);
-        Instant now = Instant.now();
-        Job j = new Job();
-        j.setId(UUID.randomUUID());
-        j.setType(r.type());
-        j.setPayload(r.payload());
-        j.setPriority(r.priority() == null ? 5 : r.priority());
-        j.setMaxAttempts(r.maxAttempts() == null ? 3 : r.maxAttempts());
-        j.setTimeoutSeconds(r.timeoutSeconds() == null ? workerProperties.defaultTimeoutSeconds() : r.timeoutSeconds());
-        j.setStatus(JobStatus.QUEUED);
-        j.setRunAt(now);
-        j.setCreatedAt(now);
-        j.setUpdatedAt(now);
-        repo.save(j);
-        queue.enqueue(j.getId(), j.getPriority());
-        metrics.counter("jobs_submitted_total").increment();
-        return j;
-    }
-
-    private void validate(SubmitRequest r) {
-        if (!handlers.supports(r.type())) {
-            throw ApiProblems.badRequest("Unknown job type '" + r.type() + "'. Supported types: " + handlers.types());
+    public ResponseEntity<Job> submit(@RequestBody @Valid SubmitRequest r,
+            @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
+        JobService.Submission submission = jobs.submit(new JobService.NewJob(r.type(), r.payload(), r.priority(),
+            r.maxAttempts(), r.timeoutSeconds(), r.runAt(), r.delaySeconds()), idempotencyKey);
+        if (!submission.created()) {
+            return ResponseEntity.ok(submission.job());
         }
-        if (r.payload() != null && r.payload().getBytes(StandardCharsets.UTF_8).length > MAX_PAYLOAD_BYTES) {
-            throw ApiProblems.badRequest("payload must be at most 64 KB (UTF-8 encoded)");
-        }
+        return ResponseEntity.created(URI.create("/jobs/" + submission.job().getId())).body(submission.job());
     }
 
     @GetMapping("/{id}")
     public Job get(@PathVariable UUID id) {
-        return repo.findById(id).orElseThrow(() -> ApiProblems.notFound("Job " + id + " not found"));
+        return jobs.get(id);
     }
 
-    @GetMapping public List<Job> byStatus(@RequestParam JobStatus status) { return repo.findByStatus(status); }
+    @GetMapping
+    public PageResponse<Job> list(
+            @RequestParam(required = false) List<JobStatus> status,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String workerId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant createdFrom,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant createdTo,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
+        var filter = new JobService.JobFilter(status, type, workerId, createdFrom, createdTo);
+        var pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.asc("id")));
+        return PageResponse.of(jobs.list(filter, pageable));
+    }
 
     @GetMapping("/dead")
     public List<Job> deadJobs() {
@@ -110,13 +106,14 @@ public class JobController {
 
     @PostMapping("/{id}/requeue")
     public Job requeue(@PathVariable UUID id) {
-        if (repo.requeueDead(id, Instant.now()) == 0) {
-            Job existing = repo.findById(id).orElseThrow(() -> ApiProblems.notFound("Job " + id + " not found"));
-            throw ApiProblems.conflict("Only DEAD jobs can be requeued (job is " + existing.getStatus() + ")");
-        }
-        Job job = repo.findById(id).orElseThrow();
-        queue.removeFromDead(id);
-        queue.enqueue(job.getId(), job.getPriority());
-        return job;
+        return jobs.requeue(id);
+    }
+
+    /** 200 when cancelled immediately; 202 when a RUNNING job was asked to stop. */
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<Job> cancel(@PathVariable UUID id) {
+        JobService.Cancellation result = jobs.cancel(id);
+        HttpStatus status = result.outcome() == JobService.CancelOutcome.CANCELLED ? HttpStatus.OK : HttpStatus.ACCEPTED;
+        return ResponseEntity.status(status).body(result.job());
     }
 }

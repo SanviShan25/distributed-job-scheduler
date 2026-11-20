@@ -43,6 +43,7 @@ public class WorkerLoop implements SmartLifecycle {
     /** Stop before HeartbeatService (lower phase = stopped later). */
     public static final int PHASE = Integer.MAX_VALUE - 100;
     static final int MAX_ERROR_LENGTH = 2000;
+    private static final long CANCEL_POLL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     private final JobQueue queue;
     private final JobRepository repo;
@@ -188,7 +189,7 @@ public class WorkerLoop implements SmartLifecycle {
     /** Popped from Redis just as shutdown began; it was never claimed, so put it straight back. */
     private void returnUnstartedJob(UUID id) {
         repo.findById(id)
-            .filter(job -> job.getStatus() == JobStatus.QUEUED)
+            .filter(job -> job.getStatus() == JobStatus.QUEUED || job.getStatus() == JobStatus.SCHEDULED)
             .ifPresent(job -> queue.enqueueAt(job.getId(), job.getPriority(), job.getRunAt()));
     }
 
@@ -231,6 +232,7 @@ public class WorkerLoop implements SmartLifecycle {
                 metrics.counter("jobs_timeout_total").increment();
                 handleFailure(job, token, new TimeoutException("timeout"));
             }
+            case CANCELLED -> markCancelled(job, token);
             case LOST_LEASE -> log.warn("Job {} lost its lease on worker {}; abandoning result", job.getId(), workerId);
             case SHUTDOWN -> releaseForShutdown(job, token);
         }
@@ -248,19 +250,30 @@ public class WorkerLoop implements SmartLifecycle {
             }
             long deadline = System.nanoTime() + timeoutFor(job).toNanos();
             long renewEvery = props.leaseRenewInterval().toNanos();
+            long nextRenewal = System.nanoTime() + renewEvery;
             while (true) {
-                long remaining = deadline - System.nanoTime();
+                long now = System.nanoTime();
+                long remaining = deadline - now;
                 if (remaining <= 0) {
                     future.cancel(true);
                     return Outcome.of(Kind.TIMED_OUT);
                 }
+                long wait = Math.min(remaining, Math.min(CANCEL_POLL_NANOS, Math.max(1, nextRenewal - now)));
                 try {
-                    future.get(Math.min(remaining, renewEvery), TimeUnit.NANOSECONDS);
+                    future.get(wait, TimeUnit.NANOSECONDS);
                     return Outcome.of(Kind.SUCCEEDED);
                 } catch (TimeoutException slice) {
-                    if (deadline - System.nanoTime() > 0 && !renewLease(job, token)) {
+                    if (cancelHinted(job)) {
                         future.cancel(true);
-                        return Outcome.of(Kind.LOST_LEASE);
+                        return Outcome.of(Kind.CANCELLED);
+                    }
+                    if (System.nanoTime() >= nextRenewal && deadline - System.nanoTime() > 0) {
+                        Kind lost = renewLease(job, token);
+                        if (lost != null) {
+                            future.cancel(true);
+                            return Outcome.of(lost);
+                        }
+                        nextRenewal = System.nanoTime() + renewEvery;
                     }
                 } catch (ExecutionException e) {
                     return new Outcome(Kind.FAILED, e.getCause() == null ? e : e.getCause());
@@ -276,14 +289,44 @@ public class WorkerLoop implements SmartLifecycle {
         }
     }
 
-    /** @return false only if the DB says we no longer own the job; transient errors keep trying. */
-    private boolean renewLease(Job job, UUID token) {
+    /**
+     * @return null if the lease was extended (or the DB was briefly unreachable), otherwise why the job
+     *         must stop: {@code CANCELLED} if a cancel was requested, {@code LOST_LEASE} if we no longer own it
+     */
+    private Kind renewLease(Job job, UUID token) {
         try {
             Instant now = clock.instant();
-            return repo.renewLease(job.getId(), workerId, token, now.plus(props.lease()), now) > 0;
+            if (repo.renewLease(job.getId(), workerId, token, now.plus(props.lease()), now) > 0) {
+                return null;
+            }
+            boolean cancelRequested = repo.findById(job.getId())
+                .filter(current -> current.getStatus() == JobStatus.RUNNING && current.isCancelRequested()
+                    && token.equals(current.getLeaseToken()))
+                .isPresent();
+            return cancelRequested ? Kind.CANCELLED : Kind.LOST_LEASE;
         } catch (RuntimeException e) {
             log.warn("Could not renew lease for job {} on worker {}", job.getId(), workerId, e);
-            return true;
+            return null;
+        }
+    }
+
+    private boolean cancelHinted(Job job) {
+        try {
+            return queue.isCancelRequested(job.getId());
+        } catch (RuntimeException e) {
+            return false; // the DB flag is checked at the next lease renewal
+        }
+    }
+
+    private void markCancelled(Job job, UUID token) {
+        if (repo.markCancelled(job.getId(), workerId, token, clock.instant()) > 0) {
+            metrics.counter("jobs_cancelled_total").increment();
+            log.info("Job {} cancelled while running on worker {}", job.getId(), workerId);
+        }
+        try {
+            queue.clearCancel(job.getId());
+        } catch (RuntimeException e) {
+            log.debug("Could not clear cancel hint for job {}", job.getId(), e);
         }
     }
 
@@ -366,7 +409,7 @@ public class WorkerLoop implements SmartLifecycle {
         return Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("job-handler-", 0).factory());
     }
 
-    enum Kind { SUCCEEDED, FAILED, TIMED_OUT, LOST_LEASE, SHUTDOWN }
+    enum Kind { SUCCEEDED, FAILED, TIMED_OUT, CANCELLED, LOST_LEASE, SHUTDOWN }
 
     record Outcome(Kind kind, Throwable error) {
         static Outcome of(Kind kind) {

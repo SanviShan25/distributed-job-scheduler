@@ -35,6 +35,14 @@ worker:
   poll-timeout: 2s
 
 scheduler:
+  retention-days: 7
+  retention-batch-size: 1000
+  retention-interval: 1h
+  cancel-hint-ttl: 1h
+  max-schedule-ahead: 365d
+  schedules:
+    poll-interval: 1s
+    batch-size: 100
   sweeper:
     stale-after: 60s
     recheck-delay: 2s

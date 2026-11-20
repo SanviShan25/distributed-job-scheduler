@@ -30,6 +30,7 @@ import lombok.RequiredArgsConstructor;
 public class JobQueue {
     public static final String READY = "queue:ready", DELAYED = "queue:delayed", DEAD = "queue:dead";
     public static final String DELAYED_PRIORITY = "queue:delayed:priority";
+    public static final String CANCEL_PREFIX = "job:cancel:";
     private static final double PRIORITY_WEIGHT = 1e13;
     private static final int DEFAULT_PRIORITY = 5;
 
@@ -116,6 +117,30 @@ public class JobQueue {
             }
         }
         return result;
+    }
+
+    /** Removes a not-yet-started job from both queues (cancellation). */
+    public void remove(UUID id) {
+        String member = id.toString();
+        redis.opsForZSet().remove(READY, member);
+        redis.opsForZSet().remove(DELAYED, member);
+        redis.opsForHash().delete(DELAYED_PRIORITY, member);
+    }
+
+    /**
+     * Fast-path hint that a RUNNING job should be cancelled; workers poll it every second. The
+     * authoritative flag is {@code jobs.cancel_requested}, which also blocks lease renewal.
+     */
+    public void requestCancel(UUID id, Duration ttl) {
+        redis.opsForValue().set(CANCEL_PREFIX + id, "1", ttl);
+    }
+
+    public boolean isCancelRequested(UUID id) {
+        return Boolean.TRUE.equals(redis.hasKey(CANCEL_PREFIX + id));
+    }
+
+    public void clearCancel(UUID id) {
+        redis.delete(CANCEL_PREFIX + id);
     }
 
     public void toDead(UUID id) { redis.opsForList().leftPush(DEAD, id.toString()); }

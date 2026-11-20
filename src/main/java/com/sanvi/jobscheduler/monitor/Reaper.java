@@ -92,19 +92,24 @@ public class Reaper {
 	}
 
 	private void recover(Job job, String reason, String metricReason) {
-		boolean exhausted = job.getAttempts() >= job.getMaxAttempts();
-		JobStatus target = exhausted ? JobStatus.DEAD : JobStatus.QUEUED;
-		String error = exhausted ? reason + "; max attempts exhausted" : reason;
+		boolean cancelled = job.isCancelRequested();
+		boolean exhausted = !cancelled && job.getAttempts() >= job.getMaxAttempts();
+		JobStatus target = cancelled ? JobStatus.CANCELLED : exhausted ? JobStatus.DEAD : JobStatus.QUEUED;
+		String error = cancelled ? reason + "; cancelled" : exhausted ? reason + "; max attempts exhausted" : reason;
 		Instant now = Instant.now();
 		int updated = repo.recoverRunning(job.getId(), job.getWorkerId(), job.getLeaseToken(), target, error,
-			exhausted ? now : null, now);
+			target.isTerminal() ? now : null, now);
 		if (updated != 1) {
 			log.debug("Job {} changed state before it could be recovered; leaving it alone", job.getId());
 			return;
 		}
 		long secondsSinceUpdate = job.getUpdatedAt() == null ? -1
 			: Math.max(0, Duration.between(job.getUpdatedAt(), Instant.now()).toSeconds());
-		if (exhausted) {
+		if (cancelled) {
+			queue.clearCancel(job.getId());
+			metrics.counter("jobs_cancelled_total").increment();
+			log.warn("Job {} cancelled: {} on worker {}", job.getId(), reason, job.getWorkerId());
+		} else if (exhausted) {
 			queue.toDead(job.getId());
 			metrics.counter("jobs_completed_total", "status", "dead").increment();
 			log.warn("Job {} moved to DEAD: {} on worker {} after {}/{} attempts", job.getId(), reason,
@@ -124,7 +129,7 @@ public class Reaper {
 	// ------------------------------------------------------------ Redis drift
 
 	/**
-	 * Re-adds QUEUED jobs that Postgres has but Redis lost (Redis wipe, crash between DB commit and
+	 * Re-adds QUEUED/SCHEDULED jobs that Postgres has but Redis lost (Redis wipe, crash between DB commit and
 	 * ZADD, worker died between pop and claim). Candidates are paged by id, checked in one Lua call
 	 * per page, re-checked once after a single wait, then re-enqueued only if the row is unchanged.
 	 */
@@ -171,7 +176,7 @@ public class Reaper {
 	}
 
 	List<JobStatus> sweptStatuses() {
-		return List.of(JobStatus.QUEUED);
+		return List.of(JobStatus.QUEUED, JobStatus.SCHEDULED);
 	}
 
 	private void collectMissing(JobStatus status, Instant updatedBefore, List<Job> into,

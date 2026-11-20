@@ -153,7 +153,10 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
     void sweeperReAddsQueuedJobsMissingFromRedis() {
         Instant stale = Instant.now().minus(Duration.ofMinutes(5));
         Job lost = staleQueued(stale, stale);
-        Job lostRetry = staleQueued(stale, Instant.now().plus(Duration.ofMinutes(10)));
+        Job lostRetry = job(JobStatus.SCHEDULED, 1, 3); // retry waiting out its backoff
+        lostRetry.setUpdatedAt(stale);
+        lostRetry.setRunAt(Instant.now().plus(Duration.ofMinutes(10)));
+        repo.saveAndFlush(lostRetry);
         Job present = staleQueued(stale, stale);
         queue.enqueue(present.getId(), present.getPriority());
         Double presentScore = redis.opsForZSet().score(JobQueue.READY, present.getId().toString());
@@ -166,6 +169,38 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
         assertThat(redis.opsForZSet().score(JobQueue.READY, present.getId().toString())).isEqualTo(presentScore);
         assertThat(inReadyQueue(fresh.getId())).isFalse();
         assertThat(redis.opsForZSet().zCard(JobQueue.READY)).isEqualTo(2);
+    }
+
+    @Test
+    void sweeperRecoversScheduledJobsMissingFromRedis() {
+        Instant stale = Instant.now().minus(Duration.ofMinutes(5));
+        Job due = job(JobStatus.SCHEDULED, 0, 3);
+        due.setUpdatedAt(stale);
+        due.setRunAt(Instant.now().minusSeconds(30));
+        repo.saveAndFlush(due);
+        Job future = job(JobStatus.SCHEDULED, 0, 3);
+        future.setUpdatedAt(stale);
+        future.setRunAt(Instant.now().plus(Duration.ofHours(1)));
+        repo.saveAndFlush(future);
+
+        reaper.requeueQueuedJobsMissingFromRedis();
+
+        assertThat(inReadyQueue(due.getId())).isTrue();
+        assertThat(inDelayedQueue(future.getId())).isTrue();
+    }
+
+    @Test
+    void lostWorkerWithPendingCancelEndsCancelledNotRequeued() {
+        Job job = running("crashed-worker", 1, 3);
+        job.setCancelRequested(true);
+        repo.saveAndFlush(job);
+
+        reaper.recoverJobsFromLostWorkers();
+
+        Job after = reload(job.getId());
+        assertThat(after.getStatus()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(after.getCompletedAt()).isNotNull();
+        assertThat(inReadyQueue(job.getId())).isFalse();
     }
 
     @Test

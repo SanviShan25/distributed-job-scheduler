@@ -36,4 +36,5 @@ public class Job {
     private String idempotencyKey;
     private UUID cronScheduleId;
     private Instant completedAt;
+    private boolean cancelRequested;
 }

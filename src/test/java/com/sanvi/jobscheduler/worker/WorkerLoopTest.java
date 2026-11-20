@@ -79,6 +79,7 @@ class WorkerLoopTest {
         job.setTimeoutSeconds(300);
         when(repo.claim(eq(job.getId()), eq(WORKER), any(), any(), any())).thenAnswer(inv -> {
             claimedToken.set(inv.getArgument(2));
+            job.setLeaseToken(inv.getArgument(2));
             return 1;
         });
         when(repo.findById(job.getId())).thenReturn(Optional.of(job));
@@ -87,6 +88,7 @@ class WorkerLoopTest {
         when(repo.markDead(any(), any(), any(), any(), any())).thenReturn(1);
         when(repo.renewLease(any(), any(), any(), any(), any())).thenReturn(1);
         when(repo.releaseForShutdown(any(), any(), any(), any())).thenReturn(1);
+        when(repo.markCancelled(any(), any(), any(), any())).thenReturn(1);
         return job;
     }
 
@@ -256,6 +258,40 @@ class WorkerLoopTest {
         verify(repo, never()).markSucceeded(any(), any(), any(), any());
         verify(repo, never()).markForRetry(any(), any(), any(), any(), any(), any());
         verify(repo, never()).markDead(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void cancelHintInRedisInterruptsTheHandlerAndMarksCancelled() throws Exception {
+        Job job = claimable(1, 3);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        when(queue.isCancelRequested(job.getId())).thenAnswer(inv -> started.getCount() == 0);
+        loop(handler(p -> {
+            started.countDown();
+            try {
+                Thread.sleep(30_000);
+            } catch (InterruptedException e) {
+                interrupted.countDown();
+                throw e;
+            }
+        })).process(job.getId());
+
+        assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
+        verify(repo).markCancelled(job.getId(), WORKER, claimedToken.get(), NOW);
+        verify(queue).clearCancel(job.getId());
+        verify(repo, never()).markForRetry(any(), any(), any(), any(), any(), any());
+        assertThat(counter("jobs_cancelled_total")).isEqualTo(1);
+    }
+
+    @Test
+    void cancelFlagInDatabaseIsHonouredWhenRedisHintIsMissing() {
+        props = props(1, 1);
+        Job job = claimable(1, 3);
+        job.setCancelRequested(true); // renewLease refuses because of the flag
+        when(repo.renewLease(any(), any(), any(), any(), any())).thenReturn(0);
+        loop(handler(p -> Thread.sleep(30_000))).process(job.getId());
+
+        verify(repo).markCancelled(job.getId(), WORKER, claimedToken.get(), NOW);
     }
 
     @Test
