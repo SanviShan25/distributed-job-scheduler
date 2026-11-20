@@ -75,10 +75,29 @@ class JobFeaturesIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void scheduledJobIsClaimableOnceDue() throws Exception {
+    void scheduledJobIsClaimableOnlyOnceDue() throws Exception {
         JsonNode job = submit("{\"type\":\"EMAIL\",\"delaySeconds\":1}", null, 201);
         UUID id = UUID.fromString(job.get("id").asString());
-        assertThat(repo.claim(id, "w", UUID.randomUUID(), Instant.now(), Instant.now().plusSeconds(30))).isEqualTo(1);
+        assertThat(repo.claim(id, "w", UUID.randomUUID(), 30)).as("not due yet").isZero();
+        Thread.sleep(1_200);
+        assertThat(repo.claim(id, "w", UUID.randomUUID(), 30)).isEqualTo(1);
+    }
+
+    @Test
+    void staleReadyQueueEntryForFutureRetryIsNotClaimedEarly() {
+        // A retry waiting out its backoff, but an old duplicate of its id is still in queue:ready
+        // (e.g. re-added by a sweep before the retry was scheduled).
+        Job retry = job(JobStatus.SCHEDULED, 1, 3);
+        retry.setRunAt(Instant.now().plus(Duration.ofMinutes(5)));
+        repo.saveAndFlush(retry);
+        queue.enqueue(retry.getId(), retry.getPriority());
+
+        assertThat(queue.pop(Duration.ofMillis(200))).contains(retry.getId());
+        assertThat(repo.claim(retry.getId(), "eager-worker", UUID.randomUUID(), 30)).isZero();
+
+        Job after = reload(retry.getId());
+        assertThat(after.getStatus()).isEqualTo(JobStatus.SCHEDULED);
+        assertThat(after.getAttempts()).isEqualTo(1);
     }
 
     @Test
@@ -157,7 +176,7 @@ class JobFeaturesIntegrationTest extends AbstractIntegrationTest {
             assertThat(inReadyQueue(id)).isFalse();
             assertThat(inDelayedQueue(id)).isFalse();
             assertThat(redis.opsForHash().hasKey(JobQueue.DELAYED_PRIORITY, id.toString())).isFalse();
-            assertThat(repo.claim(id, "w", UUID.randomUUID(), Instant.now(), Instant.now())).isZero();
+            assertThat(repo.claim(id, "w", UUID.randomUUID(), 30)).isZero();
         }
     }
 
@@ -172,8 +191,7 @@ class JobFeaturesIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(queue.isCancelRequested(job.getId())).isTrue();
         // The owning worker can no longer renew its lease, which forces it to look at the flag.
-        assertThat(repo.renewLease(job.getId(), "w1", job.getLeaseToken(), Instant.now().plusSeconds(30),
-            Instant.now())).isZero();
+        assertThat(repo.renewLease(job.getId(), "w1", job.getLeaseToken(), 30)).isZero();
         assertThat(repo.markCancelled(job.getId(), "w1", job.getLeaseToken(), Instant.now())).isEqualTo(1);
         assertThat(reload(job.getId()).getStatus()).isEqualTo(JobStatus.CANCELLED);
     }

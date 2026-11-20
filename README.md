@@ -38,7 +38,7 @@ flowchart LR
 
     subgraph api [API instances: profile=api]
         ctrl[REST controllers<br/>/jobs, /schedules]
-        reaper[Reaper<br/>lost workers, expired leases]
+        reaper[Reaper<br/>expired leases]
         sweeper[Drift sweeper<br/>DB to Redis repair]
         sched[Schedule runner<br/>SKIP LOCKED]
         ret[Retention cleaner]
@@ -80,7 +80,7 @@ flowchart LR
 1. `POST /jobs` inserts a row (`QUEUED`, or `SCHEDULED` if `runAt` is in the future), then adds the id to `queue:ready` or `queue:delayed`.
 2. Each worker thread blocks on `BZPOPMIN queue:ready` (2 s timeout, so it notices shutdown).
 3. The worker **claims** the job with a conditional update: `status IN (QUEUED, SCHEDULED) AND attempts < max_attempts`. The update increments `attempts` and sets `worker_id`, a fresh `lease_token` and `lease_expires_at`. If 0 rows change, another worker won and this one moves on.
-4. The handler runs on a virtual thread under a per-job timeout. While it runs, the worker renews the lease every `lease/3` and checks every second whether a cancel was requested.
+4. The handler runs on a virtual thread under a per-job timeout. While it runs, the worker renews the lease every 10 s (`worker.lease-renew-interval`; the lease itself is 30 s, computed with the database clock) and checks every second whether a cancel was requested.
 5. The result is written with an update that is conditional on `status = RUNNING`, the same `worker_id` **and** the same `lease_token`. A worker that lost the job in the meantime cannot overwrite it.
 6. On failure the job becomes `SCHEDULED` with `run_at = now + backoff` and goes into `queue:delayed`. A single lock-guarded mover promotes due entries to `queue:ready` with one atomic Lua script.
 
@@ -92,7 +92,7 @@ Redis key layout:
 | `queue:delayed` | ZSET | job id, score = run-at ms |
 | `queue:delayed:priority` | HASH | job id → priority, so promotion needs no DB lookup |
 | `queue:dead` | LIST | ids of DEAD jobs (informational; the DB is authoritative) |
-| `worker:{id}` | STRING, TTL 15 s | heartbeat, refreshed every 5 s |
+| `worker:{id}` | STRING, TTL 15 s | heartbeat, refreshed every 5 s; visibility and metrics only, never a recovery trigger |
 | `job:cancel:{id}` | STRING, TTL | fast-path cancel hint for RUNNING jobs |
 | `lock:*` | STRING, TTL | leases for singleton tasks (reaper sweeps, mover, retention) |
 | `ratelimit:submit:{key}` | HASH | token bucket per API key |
@@ -110,8 +110,8 @@ stateDiagram-v2
     RUNNING --> SUCCEEDED: handler returned
     RUNNING --> SCHEDULED: failed or timed out, retry after backoff
     RUNNING --> DEAD: last attempt failed / NonRetryableJobException / unknown type
-    RUNNING --> QUEUED: worker lost or lease expired (attempts left)
-    RUNNING --> DEAD: worker lost or lease expired (attempts exhausted)
+    RUNNING --> QUEUED: lease expired (attempts left)
+    RUNNING --> DEAD: lease expired (attempts exhausted)
     RUNNING --> QUEUED: worker shutdown grace expired (attempt not charged)
     RUNNING --> CANCELLED: cancel requested, acknowledged by worker or reaper
 
@@ -131,7 +131,7 @@ Delivery is **at-least-once**. A job that is accepted (`201`) will eventually ru
 
 - a worker finishes the handler but dies before writing `SUCCEEDED`;
 - a lease expires while a slow, partitioned or paused worker is still running the handler;
-- Redis loses heartbeats and the reaper re-queues jobs that were in fact still running.
+- a worker cannot reach Postgres for longer than its lease (30 s) while its handler keeps running.
 
 **Handlers must be idempotent.** For example, use the job id as an idempotency key towards downstream systems, or check whether the side effect already happened.
 
@@ -141,11 +141,11 @@ What the system does guarantee: **at most one result is recorded per attempt**, 
 
 | Scenario | What happens | Bounded by |
 |---|---|---|
-| **Worker crash** (SIGKILL, OOM, host loss) | Its `worker:{id}` heartbeat expires. The reaper (every 10 s, Redis-locked) re-queues the RUNNING jobs with a conditional update (`status = RUNNING AND worker_id AND lease_token`), so a job that finished in the meantime is never overwritten. | heartbeat TTL 15 s + reaper interval 10 s |
-| **Poison pill** (job that kills every worker that runs it) | Each crash uses up one attempt, because the claim increments `attempts`. Once `attempts ≥ maxAttempts`, the reaper marks it `DEAD` ("worker lost; max attempts exhausted") and `claim()` refuses it. | `maxAttempts` |
+| **Worker crash** (SIGKILL, OOM, host loss) | The worker stops renewing its leases. The reaper (every 10 s, Redis-locked) finds RUNNING jobs whose `lease_expires_at < now()` (database clock) and re-queues them with a conditional update (`status = RUNNING AND worker_id AND lease_token AND lease still expired`). A job that finished, or whose lease was renewed, in the meantime is never touched. The heartbeat only labels the cause (`worker lost (lease expired)`). | lease 30 s + reaper interval 10 s |
+| **Poison pill** (job that kills every worker that runs it) | Each crash uses up one attempt, because the claim increments `attempts`. Once `attempts ≥ maxAttempts`, the reaper marks it `DEAD` ("worker lost (lease expired); max attempts exhausted") and `claim()` refuses it. | `maxAttempts` |
 | **Hung handler** | Runs under `Future.get(timeout)`. On timeout it is cancelled (interrupted) and treated as a failure with message `timeout` (retry or DEAD); `jobs_timeout_total` counts these. | `timeoutSeconds` (default 300) |
-| **Hung / partitioned worker** (alive heartbeat, but not making progress or unable to reach Postgres) | The lease stops being renewed. The reaper re-queues RUNNING jobs with `lease_expires_at < now` even if the heartbeat is alive. If the old worker comes back, its completion fails the fencing check and it stops its handler. | `worker.lease-seconds` (30) |
-| **Redis wipe / failover without persistence** | Postgres is authoritative. The drift sweeper finds QUEUED/SCHEDULED jobs that are missing from both ZSETs and re-enqueues them at their `run_at`. It pages by id, checks each page with one Lua call, waits once, re-checks, and uses a conditional "touch" before each re-enqueue. Workers re-create their heartbeats within 5 s. AOF (`--appendonly yes`) makes plain restarts lossless. | `sweeper.stale-after` (60 s) + sweep interval |
+| **Hung / partitioned worker** (alive heartbeat, but not making progress or unable to reach Postgres) | The lease stops being renewed. Recovery is driven by lease expiry alone, so the reaper re-queues the job even though the heartbeat is alive. If the old worker comes back, its completion fails the fencing check and it stops its handler. | `worker.lease-seconds` (30) |
+| **Redis wipe / failover without persistence** | Postgres is authoritative. The drift sweeper finds QUEUED/SCHEDULED jobs that are missing from both ZSETs and re-enqueues them at their `run_at`. It pages by id, checks each page with one Lua call, waits once, re-checks, and uses a conditional "touch" before each re-enqueue. Losing the `worker:*` heartbeat keys does **not** trigger any recovery, because recovery is lease-based. AOF (`--appendonly yes`) makes plain restarts lossless. | `sweeper.stale-after` (60 s) + sweep interval |
 | **API crash between DB commit and `ZADD`** | The row exists but is not in Redis. The drift sweeper picks it up once it is older than `stale-after`. The schedule runner has the same window and is covered the same way. | ~60–70 s |
 | **Worker dies between `BZPOPMIN` and claim** | Same as above: the job is still QUEUED in Postgres but gone from Redis, so the sweeper restores it. | ~60–70 s |
 | **Duplicate pop** (same id in Redis twice, two workers pop it) | Only one conditional `claim` can succeed; the other is a no-op (`jobs_duplicate_skipped_total`). | — |
@@ -172,7 +172,7 @@ The Redis design is chosen to keep the dequeue path off Postgres and to show the
 Other choices:
 
 - **Fencing token instead of `attempts`.** `attempts` is decremented when a shutdown hands a job back, so it can repeat. A random UUID per claim cannot.
-- **Lease + heartbeat.** Heartbeats detect dead processes quickly (15 s). Leases detect stuck jobs on a live process. Each covers a gap in the other.
+- **Lease as the single recovery authority.** A RUNNING job is recovered only when its lease (30 s, renewed every 10 s) has expired by the **database clock**. That one rule covers crashed, stuck and partitioned workers alike, and it means losing Redis heartbeats can never cause a requeue. The heartbeat (`worker:{id}`) remains for the `workers_alive` gauge and to label recoveries. The trade-off is slower crash detection (up to ~40 s instead of ~25 s).
 - **Cooperative cancellation.** Java cannot safely kill a thread. A RUNNING job is interrupted, and the handler must respond to interrupts. Lease renewal is refused while `cancel_requested` is set, so the worker notices even if the Redis hint is lost.
 - **Full-jitter backoff** (`random(0, min(cap, base·2^attempt))`). This spreads out jobs that failed together, for example during a downstream outage.
 - **Retries are `SCHEDULED`** because they are future-dated, which keeps the state machine uniform.
@@ -234,7 +234,8 @@ Every property can be set as an environment variable using Spring's relaxed bind
 | Property | Default | Description |
 |---|---|---|
 | `default-timeout-seconds` | `300` | timeout for jobs submitted without `timeoutSeconds` |
-| `lease-seconds` | `30` | lease length; renewed every third of it |
+| `lease-seconds` | `30` | lease length, computed as database `now() + lease` |
+| `lease-renew-interval` | `10s` | how often a running job renews its lease; must be shorter than the lease |
 | `shutdown-grace-seconds` | `25` | drain time on shutdown before in-flight jobs are interrupted and returned |
 | `base-backoff-seconds` | `1` | backoff base |
 | `max-backoff-seconds` | `300` | backoff cap (full jitter below it) |
@@ -269,7 +270,7 @@ Every property can be set as an environment variable using Spring's relaxed bind
 | `rate-limit.capacity` | `200` | burst size per key (Compose: `RATE_LIMIT_CAPACITY`) |
 | `rate-limit.refill-per-second` | `50` | sustained rate per key (Compose: `RATE_LIMIT_REFILL_PER_SECOND`) |
 
-Fixed values: heartbeat TTL 15 s (refreshed every 5 s); reaper and drift sweeps every 10 s; mover every 500 ms; `spring.lifecycle.timeout-per-shutdown-phase: 40s`.
+Fixed values: heartbeat TTL 15 s (refreshed every 5 s; visibility only); reaper and drift sweeps every 10 s; mover every 500 ms; `spring.lifecycle.timeout-per-shutdown-phase: 40s`.
 
 ## API reference
 
@@ -349,7 +350,7 @@ The handler must be on the classpath of both the API (which validates `type`) an
 | `job_duration_seconds` | histogram | handler run time |
 | `job_queue_wait_seconds` | histogram | from `runAt` (or `createdAt`) to claim |
 | `queue_depth{queue}` | gauge | ready / delayed / dead (API) |
-| `workers_alive` | gauge | live heartbeat keys (API) |
+| `workers_alive` | gauge | live heartbeat keys (API); informational, not used for recovery |
 
 **Logs** are ECS JSON (`logging.structured.format.console: ecs`). Every log line written while a job is being processed has `jobId`, `workerId` and `attempt` in the MDC, including lines logged by the handler on its own thread.
 
@@ -400,8 +401,9 @@ export API_KEY=<one of API_KEYS>
 - **At-least-once only.** Handlers must be idempotent (see above).
 - **Interrupt-deaf handlers.** A handler that ignores interrupts keeps running on its virtual thread after a timeout or cancel. Its result is discarded (fencing), but it still uses CPU and may produce side effects.
 - **Recovery latency.** Jobs lost between a DB commit and the Redis write, or between pop and claim, wait for `sweeper.stale-after` (60 s) before re-enqueue.
-- **Redis wipe can cause duplicate runs.** If heartbeats vanish, the reaper may re-queue jobs that are still running. They are fenced, but their handlers run twice.
-- **Clock assumptions.** Leases and `runAt` compare instants from different hosts; keep clocks NTP-synced. The rate limiter uses Redis' clock and is not affected.
+- **Crash detection takes up to ~40 s** (30 s lease + 10 s reaper interval). Lower `worker.lease-seconds` and `worker.lease-renew-interval` together for faster recovery, at the cost of more DB writes.
+- **Partitioned workers can cause duplicate runs.** A worker cut off from Postgres for longer than its lease keeps running its handler while the job is re-queued elsewhere. The stale result is fenced off, but the side effects happen twice.
+- **Clock assumptions.** Leases are set, renewed and checked with the database clock, and `claim` compares `run_at` to database `now()`, so JVM clock skew cannot expire a lease early or start a job before it is due. Retry `run_at` and Redis delayed-queue scores are still computed from the worker's clock. If a worker's clock runs ahead, a retry may be promoted early; `claim` then refuses it and the worker puts it back in the delayed queue, so the only cost is a short delay. The rate limiter uses Redis' clock.
 - **Single Redis.** No Redis Cluster/Sentinel configuration is included.
 - **Handler registry is shared.** The API validates `type` against the handlers on its own classpath, so API and workers must ship the same handler set.
 - **API keys are static** (environment config): no per-key scopes, rotation endpoint or key store.

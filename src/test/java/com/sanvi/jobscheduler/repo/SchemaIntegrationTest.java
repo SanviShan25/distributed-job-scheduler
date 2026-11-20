@@ -77,7 +77,7 @@ class SchemaIntegrationTest extends AbstractIntegrationTest {
     void terminalTransitionsSetCompletedAt() {
         Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 0, 3));
         UUID token = UUID.randomUUID();
-        repo.claim(job.getId(), "w", token, Instant.now(), Instant.now().plusSeconds(30));
+        repo.claim(job.getId(), "w", token, 30);
         assertThat(reload(job.getId()).getCompletedAt()).isNull();
         repo.markDead(job.getId(), "w", token, "x", Instant.now());
         assertThat(reload(job.getId()).getCompletedAt()).isNotNull();

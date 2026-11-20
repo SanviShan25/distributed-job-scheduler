@@ -11,6 +11,7 @@ import org.mockito.AdditionalAnswers;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobStatus;
@@ -28,22 +29,34 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
     @Autowired MeterRegistry metrics;
     @Autowired DistributedLock lock;
     @Autowired SchedulerProperties props;
+    @Autowired JdbcTemplate jdbc;
+
+    /** A RUNNING job whose lease already ran out (worker stopped renewing). */
+    private Job expiredRunning(String workerId, int attempts, int maxAttempts) {
+        Job job = running(workerId, attempts, maxAttempts);
+        job.setLeaseExpiresAt(Instant.now().minusSeconds(5));
+        return repo.saveAndFlush(job);
+    }
+
+    private Reaper reaperUsing(JobRepository repository) {
+        return new Reaper(repository, queue, redis, metrics, lock, props);
+    }
 
     @Test
     void reaperDoesNotOverwriteAJobThatSucceededAfterItWasRead() {
-        Job job = running("ghost-worker", 1, 3); // no heartbeat -> looks lost
+        Job job = expiredRunning("ghost-worker", 1, 3);
         UUID token = job.getLeaseToken();
 
-        // The reaper reads RUNNING jobs, then the (slow but alive) worker commits SUCCEEDED,
+        // The reaper reads expired leases, then the (slow but alive) worker commits SUCCEEDED,
         // then the reaper acts on its stale snapshot.
         JobRepository racingRepo = mock(JobRepository.class, AdditionalAnswers.delegatesTo(repo));
         doAnswer(invocation -> {
-            List<Job> snapshot = repo.findByStatus(JobStatus.RUNNING);
+            List<Job> snapshot = repo.findRunningWithExpiredLease();
             assertThat(repo.markSucceeded(job.getId(), "ghost-worker", token, Instant.now())).isEqualTo(1);
             return snapshot;
-        }).when(racingRepo).findByStatus(JobStatus.RUNNING);
+        }).when(racingRepo).findRunningWithExpiredLease();
 
-        new Reaper(racingRepo, queue, redis, metrics, lock, props).recoverJobsFromLostWorkers();
+        reaperUsing(racingRepo).recoverExpiredLeases();
 
         Job after = reload(job.getId());
         assertThat(after.getStatus()).isEqualTo(JobStatus.SUCCEEDED);
@@ -52,15 +65,70 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void jobFromLostWorkerIsRequeued() {
-        Job job = running("crashed-worker", 1, 3);
+    void reaperDoesNotRecoverALeaseRenewedAfterItWasRead() {
+        Job job = expiredRunning("slow-worker", 1, 3);
+        JobRepository racingRepo = mock(JobRepository.class, AdditionalAnswers.delegatesTo(repo));
+        doAnswer(invocation -> {
+            List<Job> snapshot = repo.findRunningWithExpiredLease();
+            assertThat(repo.renewLease(job.getId(), "slow-worker", job.getLeaseToken(), 30)).isEqualTo(1);
+            return snapshot;
+        }).when(racingRepo).findRunningWithExpiredLease();
 
-        reaper.recoverJobsFromLostWorkers();
+        reaperUsing(racingRepo).recoverExpiredLeases();
+
+        assertThat(reload(job.getId()).getStatus()).isEqualTo(JobStatus.RUNNING);
+        assertThat(inReadyQueue(job.getId())).isFalse();
+    }
+
+    @Test
+    void crashedWorkerJobIsRequeuedOnceItsLeaseExpires() {
+        Job job = expiredRunning("crashed-worker", 1, 3); // no heartbeat either
+
+        reaper.reap();
 
         Job after = reload(job.getId());
         assertThat(after.getStatus()).isEqualTo(JobStatus.QUEUED);
-        assertThat(after.getLastError()).isEqualTo("worker lost");
+        assertThat(after.getLastError()).isEqualTo("worker lost (lease expired)");
         assertThat(after.getLeaseToken()).isNull();
+        assertThat(inReadyQueue(job.getId())).isTrue();
+        assertThat(metrics.find("jobs_recovered_total").tag("reason", "worker_lost").counter().count())
+            .isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void missingHeartbeatAloneNeverTriggersRecovery() {
+        Job job = running("worker-a", 1, 3);        // valid 30 s lease
+        redis.opsForValue().set("worker:worker-a", "alive", Duration.ofSeconds(30));
+        redis.opsForValue().set("worker:worker-b", "alive", Duration.ofSeconds(30));
+
+        // Simulate a Redis wipe / heartbeat loss while the job is still running.
+        var heartbeatKeys = redis.keys("worker:*");
+        assertThat(heartbeatKeys).isNotEmpty();
+        redis.delete(heartbeatKeys);
+
+        reaper.reap();
+
+        Job after = reload(job.getId());
+        assertThat(after.getStatus()).isEqualTo(JobStatus.RUNNING);
+        assertThat(after.getLastError()).isNull();
+        assertThat(inReadyQueue(job.getId())).isFalse();
+    }
+
+    @Test
+    void workerThatStopsRenewingIsRecoveredAfterTheLeaseExpires() throws Exception {
+        Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 0, 3));
+        redis.opsForValue().set("worker:frozen", "alive", Duration.ofSeconds(30)); // heartbeat still fine
+        assertThat(repo.claim(job.getId(), "frozen", UUID.randomUUID(), 1)).isEqualTo(1); // 1 s lease, never renewed
+
+        reaper.reap();
+        assertThat(reload(job.getId()).getStatus()).as("lease still valid").isEqualTo(JobStatus.RUNNING);
+
+        Thread.sleep(1_300);
+        reaper.reap();
+
+        Job after = reload(job.getId());
+        assertThat(after.getStatus()).isEqualTo(JobStatus.QUEUED);
+        assertThat(after.getLastError()).isEqualTo("lease expired");
         assertThat(inReadyQueue(job.getId())).isTrue();
     }
 
@@ -80,59 +148,54 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
         Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 0, 3));
 
         for (int attempt = 1; attempt <= 3; attempt++) {
-            // A worker claims the job, then crashes (no heartbeat) before reporting anything.
-            assertThat(repo.claim(job.getId(), "doomed-" + attempt, UUID.randomUUID(), Instant.now(),
-                Instant.now().plusSeconds(30))).isEqualTo(1);
-            reaper.recoverJobsFromLostWorkers();
+            // A worker claims the job, then crashes before reporting or renewing (lease of 0 s).
+            assertThat(repo.claim(job.getId(), "doomed-" + attempt, UUID.randomUUID(), 0)).isEqualTo(1);
+            reaper.recoverExpiredLeases();
         }
 
         Job after = reload(job.getId());
         assertThat(after.getStatus()).isEqualTo(JobStatus.DEAD);
         assertThat(after.getAttempts()).isEqualTo(3);
-        assertThat(after.getLastError()).isEqualTo("worker lost; max attempts exhausted");
+        assertThat(after.getLastError()).isEqualTo("worker lost (lease expired); max attempts exhausted");
+        assertThat(after.getCompletedAt()).isNotNull();
         assertThat(redis.opsForList().range(JobQueue.DEAD, 0, -1)).containsExactly(job.getId().toString());
         // ...and it can never be claimed again.
-        assertThat(repo.claim(job.getId(), "another", UUID.randomUUID(), Instant.now(), Instant.now()))
-            .isZero();
+        assertThat(repo.claim(job.getId(), "another", UUID.randomUUID(), 30)).isZero();
     }
 
     @Test
     void claimRefusesQueuedJobWithExhaustedAttempts() {
         Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 3, 3));
-        assertThat(repo.claim(job.getId(), "w", UUID.randomUUID(), Instant.now(), Instant.now())).isZero();
+        assertThat(repo.claim(job.getId(), "w", UUID.randomUUID(), 30)).isZero();
     }
 
     @Test
-    void expiredLeaseIsRecoveredEvenWhileWorkerHeartbeatIsAlive() {
-        redis.opsForValue().set("worker:stuck-worker", "alive", Duration.ofSeconds(30));
-        Job job = running("stuck-worker", 1, 3);
-        job.setLeaseExpiresAt(Instant.now().minusSeconds(5));
-        repo.saveAndFlush(job);
+    void leaseIsSetFromTheDatabaseClock() {
+        Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 0, 3));
+        repo.claim(job.getId(), "w", UUID.randomUUID(), 30);
 
-        reaper.reap();
-
-        Job after = reload(job.getId());
-        assertThat(after.getStatus()).isEqualTo(JobStatus.QUEUED);
-        assertThat(after.getLastError()).isEqualTo("lease expired");
-        assertThat(inReadyQueue(job.getId())).isTrue();
+        Boolean leaseIsNowPlus30 = jdbc.queryForObject(
+            "select lease_expires_at between now() + interval '29 seconds' and now() + interval '31 seconds' "
+                + "from jobs where id = ?", Boolean.class, job.getId());
+        assertThat(leaseIsNowPlus30).isTrue();
     }
 
     @Test
     void staleWorkerCannotCompleteAJobReclaimedUnderTheSameWorkerId() {
         Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 0, 3));
         UUID staleToken = UUID.randomUUID();
-        repo.claim(job.getId(), "worker-1", staleToken, Instant.now(), Instant.now().minusSeconds(1));
+        repo.claim(job.getId(), "worker-1", staleToken, 0);
         redis.opsForValue().set("worker:worker-1", "alive", Duration.ofSeconds(30));
 
         reaper.recoverExpiredLeases(); // lease expired -> back to QUEUED
         UUID freshToken = UUID.randomUUID();
         // A restarted process reusing the id "worker-1" claims it again.
-        assertThat(repo.claim(job.getId(), "worker-1", freshToken, Instant.now(), Instant.now().plusSeconds(30)))
-            .isEqualTo(1);
+        assertThat(repo.claim(job.getId(), "worker-1", freshToken, 30)).isEqualTo(1);
 
         assertThat(repo.markSucceeded(job.getId(), "worker-1", staleToken, Instant.now())).isZero();
         assertThat(repo.markDead(job.getId(), "worker-1", staleToken, "x", Instant.now())).isZero();
         assertThat(repo.markForRetry(job.getId(), "worker-1", staleToken, "x", Instant.now(), Instant.now())).isZero();
+        assertThat(repo.renewLease(job.getId(), "worker-1", staleToken, 30)).isZero();
         assertThat(repo.markSucceeded(job.getId(), "worker-1", freshToken, Instant.now())).isEqualTo(1);
     }
 
@@ -140,7 +203,7 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
     void releaseForShutdownDoesNotChargeTheAttempt() {
         Job job = repo.saveAndFlush(job(JobStatus.QUEUED, 0, 3));
         UUID token = UUID.randomUUID();
-        repo.claim(job.getId(), "w", token, Instant.now(), Instant.now().plusSeconds(30));
+        repo.claim(job.getId(), "w", token, 30);
 
         assertThat(repo.releaseForShutdown(job.getId(), "w", token, Instant.now())).isEqualTo(1);
 
@@ -191,11 +254,11 @@ class ReaperIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void lostWorkerWithPendingCancelEndsCancelledNotRequeued() {
-        Job job = running("crashed-worker", 1, 3);
+        Job job = expiredRunning("crashed-worker", 1, 3);
         job.setCancelRequested(true);
         repo.saveAndFlush(job);
 
-        reaper.recoverJobsFromLostWorkers();
+        reaper.recoverExpiredLeases();
 
         Job after = reload(job.getId());
         assertThat(after.getStatus()).isEqualTo(JobStatus.CANCELLED);

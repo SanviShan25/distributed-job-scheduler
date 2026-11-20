@@ -47,11 +47,8 @@ public class Reaper {
 
 	@Scheduled(fixedDelay = 10000)
 	public void reap() {
-		lock.runExclusively(RUNNING_LOCK_KEY, props.sweeper().lockTtl(), handle -> {
-			guarded("lost-worker sweep", this::recoverJobsFromLostWorkers);
-			handle.renew();
-			guarded("lease-expiry sweep", this::recoverExpiredLeases);
-		});
+		lock.runExclusively(RUNNING_LOCK_KEY, props.sweeper().lockTtl(),
+			handle -> guarded("lease-expiry sweep", this::recoverExpiredLeases));
 	}
 
 	@Scheduled(fixedDelay = 10000)
@@ -70,24 +67,22 @@ public class Reaper {
 
 	// ------------------------------------------------------------ RUNNING jobs
 
-	void recoverJobsFromLostWorkers() {
-		Map<String, Boolean> aliveByWorker = new HashMap<>();
-		for (Job job : repo.findByStatus(JobStatus.RUNNING)) {
-			String workerId = job.getWorkerId();
-			boolean alive = workerId != null
-				&& aliveByWorker.computeIfAbsent(workerId, this::isWorkerAlive);
-			// Re-check right before acting in case the worker renewed its heartbeat meanwhile.
-			if (alive || (workerId != null && isWorkerAlive(workerId))) {
-				continue;
-			}
-			recover(job, "worker lost", "worker_lost");
-		}
-	}
-
-	/** RUNNING jobs whose lease ran out: the worker is alive but stuck (or partitioned from the DB). */
+	/**
+	 * Lease expiry is the <em>only</em> trigger for recovering a RUNNING job. Expiry is judged by the
+	 * database clock both here and in the conditional update, so neither JVM clock skew nor a lease renewed
+	 * between the read and the update can cause a premature requeue. The heartbeat is consulted only to
+	 * label why the lease expired (crashed worker vs. stuck/partitioned worker).
+	 */
 	void recoverExpiredLeases() {
-		for (Job job : repo.findByStatusAndLeaseExpiresAtBefore(JobStatus.RUNNING, Instant.now())) {
-			recover(job, "lease expired", "lease_expired");
+		Map<String, Boolean> aliveByWorker = new HashMap<>();
+		for (Job job : repo.findRunningWithExpiredLease()) {
+			boolean heartbeatAlive = job.getWorkerId() != null
+				&& aliveByWorker.computeIfAbsent(job.getWorkerId(), this::isWorkerAlive);
+			if (heartbeatAlive) {
+				recover(job, "lease expired", "lease_expired");
+			} else {
+				recover(job, "worker lost (lease expired)", "worker_lost");
+			}
 		}
 	}
 
@@ -96,9 +91,8 @@ public class Reaper {
 		boolean exhausted = !cancelled && job.getAttempts() >= job.getMaxAttempts();
 		JobStatus target = cancelled ? JobStatus.CANCELLED : exhausted ? JobStatus.DEAD : JobStatus.QUEUED;
 		String error = cancelled ? reason + "; cancelled" : exhausted ? reason + "; max attempts exhausted" : reason;
-		Instant now = Instant.now();
-		int updated = repo.recoverRunning(job.getId(), job.getWorkerId(), job.getLeaseToken(), target, error,
-			target.isTerminal() ? now : null, now);
+		int updated = repo.recoverExpired(job.getId(), job.getWorkerId(), job.getLeaseToken(), target.name(), error,
+			target.isTerminal());
 		if (updated != 1) {
 			log.debug("Job {} changed state before it could be recovered; leaving it alone", job.getId());
 			return;
@@ -122,6 +116,7 @@ public class Reaper {
 		metrics.counter("jobs_recovered_total", "reason", metricReason).increment();
 	}
 
+	/** Heartbeat key exists: used for labelling and metrics only, never as a recovery trigger. */
 	private boolean isWorkerAlive(String workerId) {
 		return Boolean.TRUE.equals(redis.hasKey("worker:" + workerId));
 	}

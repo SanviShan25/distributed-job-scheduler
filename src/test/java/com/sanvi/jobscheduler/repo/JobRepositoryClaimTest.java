@@ -63,6 +63,6 @@ class JobRepositoryClaimTest extends AbstractIntegrationTest {
         if (!start.await(5, TimeUnit.SECONDS)) {
             throw new IllegalStateException("timed out waiting to start concurrent claim");
         }
-        return repo.claim(jobId, workerId, UUID.randomUUID(), Instant.now(), Instant.now().plusSeconds(30));
+        return repo.claim(jobId, workerId, UUID.randomUUID(), 30);
     }
 }

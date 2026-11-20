@@ -55,6 +55,7 @@ springdoc:
 worker:
   default-timeout-seconds: 300
   lease-seconds: 30
+  lease-renew-interval: 10s
   shutdown-grace-seconds: 25
   base-backoff-seconds: 1
   max-backoff-seconds: 300

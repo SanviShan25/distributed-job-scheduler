@@ -216,9 +216,10 @@ public class WorkerLoop implements SmartLifecycle {
     private void processWithContext(UUID id) {
         UUID token = UUID.randomUUID();
         Instant now = clock.instant();
-        if (repo.claim(id, workerId, token, now, now.plus(props.lease())) == 0) {
+        if (repo.claim(id, workerId, token, props.leaseSeconds()) == 0) {
             log.debug("skipped: job {} is not claimable by worker {}", id, workerId);
             metrics.counter("jobs_duplicate_skipped_total").increment();
+            redelayIfNotYetDue(id, now);
             return;
         }
 
@@ -324,8 +325,7 @@ public class WorkerLoop implements SmartLifecycle {
      */
     private Kind renewLease(Job job, UUID token) {
         try {
-            Instant now = clock.instant();
-            if (repo.renewLease(job.getId(), workerId, token, now.plus(props.lease()), now) > 0) {
+            if (repo.renewLease(job.getId(), workerId, token, props.leaseSeconds()) > 0) {
                 return null;
             }
             boolean cancelRequested = repo.findById(job.getId())
@@ -356,6 +356,25 @@ public class WorkerLoop implements SmartLifecycle {
             queue.clearCancel(job.getId());
         } catch (RuntimeException e) {
             log.debug("Could not clear cancel hint for job {}", job.getId(), e);
+        }
+    }
+
+    /**
+     * A SCHEDULED job popped before its {@code run_at} (by the database clock) is refused by
+     * {@code claim}. Put it back in the delayed queue instead of dropping it; at least 1 s ahead so a
+     * JVM clock running ahead of the database cannot cause a tight promote/refuse loop.
+     */
+    private void redelayIfNotYetDue(UUID id, Instant now) {
+        try {
+            repo.findById(id)
+                .filter(job -> job.getStatus() == JobStatus.SCHEDULED && job.getAttempts() < job.getMaxAttempts())
+                .ifPresent(job -> {
+                    long runAt = Math.max(job.getRunAt().toEpochMilli(), now.plusSeconds(1).toEpochMilli());
+                    queue.enqueueDelayed(job.getId(), job.getPriority(), runAt);
+                    log.debug("Job {} popped before its run_at; returned to the delayed queue", id);
+                });
+        } catch (RuntimeException e) {
+            log.warn("Could not re-delay job {}; the drift sweeper will restore it", id, e);
         }
     }
 

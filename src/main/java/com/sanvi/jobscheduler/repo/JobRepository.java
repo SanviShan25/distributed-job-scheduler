@@ -25,7 +25,13 @@ public interface JobRepository extends JpaRepository<Job, UUID>, JpaSpecificatio
 
     Optional<Job> findByIdempotencyKey(String idempotencyKey);
 
-    List<Job> findByStatusAndLeaseExpiresAtBefore(JobStatus status, Instant now);
+    /**
+     * RUNNING jobs whose lease has expired by the <em>database</em> clock. A NULL lease only exists on rows
+     * that were RUNNING before leases were introduced (V2) and is treated as expired.
+     */
+    @Query(value = "select * from jobs where status = 'RUNNING' "
+        + "and (lease_expires_at is null or lease_expires_at < now())", nativeQuery = true)
+    List<Job> findRunningWithExpiredLease();
 
     /** Keyset page of jobs in {@code status} not touched since {@code updatedBefore}. */
     @Query("select j from Job j where j.status = :status and j.updatedAt < :updatedBefore "
@@ -33,24 +39,32 @@ public interface JobRepository extends JpaRepository<Job, UUID>, JpaSpecificatio
     List<Job> findStalePage(@Param("status") JobStatus status, @Param("updatedBefore") Instant updatedBefore,
         @Param("afterId") UUID afterId, Limit limit);
 
+    /**
+     * Claims a job for {@code workerId}. QUEUED jobs are always claimable; SCHEDULED jobs only once
+     * {@code run_at <= now()}, so a stale ready-queue entry for a future retry cannot run early.
+     * The lease is computed with the database clock, so JVM clock skew cannot shorten or extend it.
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING, "
-        + "j.workerId = :workerId, j.attempts = j.attempts + 1, j.leaseToken = :token, "
-        + "j.leaseExpiresAt = :leaseExpiresAt, j.updatedAt = :now "
-        + "where j.id = :id and j.status in (com.sanvi.jobscheduler.domain.JobStatus.QUEUED, "
-        + "com.sanvi.jobscheduler.domain.JobStatus.SCHEDULED) and j.attempts < j.maxAttempts")
+    @Query(value = "update jobs set status = 'RUNNING', worker_id = :workerId, attempts = attempts + 1, "
+        + "lease_token = :token, lease_expires_at = now() + make_interval(secs => :leaseSeconds), "
+        + "updated_at = now() "
+        + "where id = :id and attempts < max_attempts "
+        + "and (status = 'QUEUED' or (status = 'SCHEDULED' and run_at <= now()))", nativeQuery = true)
     int claim(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
-        @Param("now") Instant now, @Param("leaseExpiresAt") Instant leaseExpiresAt);
+        @Param("leaseSeconds") double leaseSeconds);
 
-    /** Extends the lease. Returns 0 if ownership was lost <em>or</em> a cancel was requested. */
+    /**
+     * Extends the lease to database {@code now() + leaseSeconds}. Returns 0 if ownership was lost
+     * <em>or</em> a cancel was requested.
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("update Job j set j.leaseExpiresAt = :leaseExpiresAt, j.updatedAt = :now "
-        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
-        + "and j.workerId = :workerId and j.leaseToken = :token and j.cancelRequested = false")
+    @Query(value = "update jobs set lease_expires_at = now() + make_interval(secs => :leaseSeconds), "
+        + "updated_at = now() where id = :id and status = 'RUNNING' and worker_id = :workerId "
+        + "and lease_token = :token and cancel_requested = false", nativeQuery = true)
     int renewLease(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
-        @Param("leaseExpiresAt") Instant leaseExpiresAt, @Param("now") Instant now);
+        @Param("leaseSeconds") double leaseSeconds);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
@@ -91,16 +105,21 @@ public interface JobRepository extends JpaRepository<Job, UUID>, JpaSpecificatio
     int releaseForShutdown(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
         @Param("now") Instant now);
 
-    /** Reaper recovery (worker lost / lease expired) to QUEUED or DEAD, only if ownership is unchanged. */
+    /**
+     * Reaper recovery of a RUNNING job to QUEUED, DEAD or CANCELLED. Applies only if ownership is
+     * unchanged <em>and</em> the lease is still expired by the database clock, so a lease renewed after
+     * the reaper read the row is never recovered.
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("update Job j set j.status = :newStatus, j.lastError = :lastError, j.leaseToken = null, "
-        + "j.leaseExpiresAt = null, j.completedAt = :completedAt, j.updatedAt = :now "
-        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
-        + "and j.workerId = :workerId and j.leaseToken = :token")
-    int recoverRunning(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
-        @Param("newStatus") JobStatus newStatus, @Param("lastError") String lastError,
-        @Param("completedAt") Instant completedAt, @Param("now") Instant now);
+    @Query(value = "update jobs set status = :newStatus, last_error = :lastError, lease_token = null, "
+        + "lease_expires_at = null, completed_at = case when :terminal then now() else null end, "
+        + "updated_at = now() "
+        + "where id = :id and status = 'RUNNING' and worker_id = :workerId and lease_token = :token "
+        + "and (lease_expires_at is null or lease_expires_at < now())", nativeQuery = true)
+    int recoverExpired(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("newStatus") String newStatus, @Param("lastError") String lastError,
+        @Param("terminal") boolean terminal);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional

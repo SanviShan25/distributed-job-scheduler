@@ -1,6 +1,11 @@
 server:
   port: ${PORT:8081}
 
+management:
+  server:
+    # Same port as the API's actuator in Compose (9091); defaults to PORT for local runs.
+    port: ${MANAGEMENT_PORT:${server.port}}
+
 worker:
   id: ${WORKER_ID:worker-${server.port}}
   concurrency: ${WORKER_CONCURRENCY:4}

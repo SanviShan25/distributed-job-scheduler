@@ -11,9 +11,9 @@ scrape_configs:
     dns_sd_configs:
       - names: [worker]
         type: A
-        port: 8080
+        port: 9091   # worker management port
 
-# For local VS Code runs, comment out the api/worker jobs above and enable:
+# For local IDE runs (workers default to management port = PORT), comment out the api/worker jobs above and enable:
 #  - job_name: local-vscode
 #    metrics_path: /actuator/prometheus
 #    static_configs:

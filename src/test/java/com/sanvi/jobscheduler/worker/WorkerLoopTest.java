@@ -18,6 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -56,7 +57,9 @@ class WorkerLoopTest {
     }
 
     private static WorkerProperties props(int leaseSeconds, int graceSeconds) {
-        return new WorkerProperties(WORKER, 1, 300, leaseSeconds, graceSeconds, 1, 300, Duration.ofMillis(50));
+        Duration renewEvery = Duration.ofMillis(leaseSeconds * 1000L / 3);
+        return new WorkerProperties(WORKER, 1, 300, leaseSeconds, renewEvery, graceSeconds, 1, 300,
+            Duration.ofMillis(50));
     }
 
     /** Backoff stub always returns the ceiling so delays are deterministic. */
@@ -77,7 +80,7 @@ class WorkerLoopTest {
         job.setAttempts(attemptsAfterClaim);
         job.setMaxAttempts(maxAttempts);
         job.setTimeoutSeconds(300);
-        when(repo.claim(eq(job.getId()), eq(WORKER), any(), any(), any())).thenAnswer(inv -> {
+        when(repo.claim(eq(job.getId()), eq(WORKER), any(), anyDouble())).thenAnswer(inv -> {
             claimedToken.set(inv.getArgument(2));
             job.setLeaseToken(inv.getArgument(2));
             return 1;
@@ -86,7 +89,7 @@ class WorkerLoopTest {
         when(repo.markSucceeded(any(), any(), any(), any())).thenReturn(1);
         when(repo.markForRetry(any(), any(), any(), any(), any(), any())).thenReturn(1);
         when(repo.markDead(any(), any(), any(), any(), any())).thenReturn(1);
-        when(repo.renewLease(any(), any(), any(), any(), any())).thenReturn(1);
+        when(repo.renewLease(any(), any(), any(), anyDouble())).thenReturn(1);
         when(repo.releaseForShutdown(any(), any(), any(), any())).thenReturn(1);
         when(repo.markCancelled(any(), any(), any(), any())).thenReturn(1);
         return job;
@@ -247,13 +250,32 @@ class WorkerLoopTest {
     @Test
     void unclaimableJobIsSkippedWithoutRunningTheHandler() {
         UUID id = UUID.randomUUID();
-        when(repo.claim(any(), any(), any(), any(), any())).thenReturn(0);
+        when(repo.claim(any(), any(), any(), anyDouble())).thenReturn(0);
         AtomicBoolean ran = new AtomicBoolean();
         loop(handler(p -> ran.set(true))).process(id);
 
         assertThat(ran).isFalse();
-        verify(repo, never()).findById(any());
+        verify(queue, never()).enqueueDelayed(any(), anyInt(), anyLong());
         assertThat(counter("jobs_duplicate_skipped_total")).isEqualTo(1);
+    }
+
+    @Test
+    void scheduledJobPoppedBeforeItsRunAtGoesBackToTheDelayedQueue() {
+        Job early = new Job();
+        early.setId(UUID.randomUUID());
+        early.setStatus(JobStatus.SCHEDULED);
+        early.setPriority(4);
+        early.setAttempts(1);
+        early.setMaxAttempts(3);
+        early.setRunAt(NOW.plusSeconds(60));
+        when(repo.claim(any(), any(), any(), anyDouble())).thenReturn(0); // refused: run_at > now()
+        when(repo.findById(early.getId())).thenReturn(Optional.of(early));
+        AtomicBoolean ran = new AtomicBoolean();
+
+        loop(handler(p -> ran.set(true))).process(early.getId());
+
+        assertThat(ran).isFalse();
+        verify(queue).enqueueDelayed(early.getId(), 4, NOW.plusSeconds(60).toEpochMilli());
     }
 
     @Test
@@ -262,7 +284,7 @@ class WorkerLoopTest {
         Job job = claimable(1, 3);
         loop(handler(p -> Thread.sleep(1_200))).process(job.getId());
 
-        verify(repo, atLeast(2)).renewLease(eq(job.getId()), eq(WORKER), eq(claimedToken.get()), any(), any());
+        verify(repo, atLeast(2)).renewLease(eq(job.getId()), eq(WORKER), eq(claimedToken.get()), eq(1.0));
         verify(repo).markSucceeded(job.getId(), WORKER, claimedToken.get(), NOW);
     }
 
@@ -270,7 +292,7 @@ class WorkerLoopTest {
     void lostLeaseCancelsTheHandlerAndReportsNothing() throws Exception {
         props = props(1, 1);
         Job job = claimable(1, 3);
-        when(repo.renewLease(any(), any(), any(), any(), any())).thenReturn(0);
+        when(repo.renewLease(any(), any(), any(), anyDouble())).thenReturn(0);
         CountDownLatch interrupted = new CountDownLatch(1);
         loop(handler(p -> {
             try {
@@ -314,7 +336,7 @@ class WorkerLoopTest {
         props = props(1, 1);
         Job job = claimable(1, 3);
         job.setCancelRequested(true); // renewLease refuses because of the flag
-        when(repo.renewLease(any(), any(), any(), any(), any())).thenReturn(0);
+        when(repo.renewLease(any(), any(), any(), anyDouble())).thenReturn(0);
         loop(handler(p -> Thread.sleep(30_000))).process(job.getId());
 
         verify(repo).markCancelled(job.getId(), WORKER, claimedToken.get(), NOW);
@@ -378,7 +400,7 @@ class WorkerLoopTest {
         int afterStop = polls.get();
         Thread.sleep(200);
         assertThat(polls.get()).isEqualTo(afterStop);
-        verify(repo, never()).claim(any(), anyString(), any(), any(), any());
+        verify(repo, never()).claim(any(), anyString(), any(), anyDouble());
         verify(queue, never()).enqueueDelayed(any(), anyInt(), anyLong());
     }
 
