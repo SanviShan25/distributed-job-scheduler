@@ -1,0 +1,8 @@
+scheduler:
+  # Tests call scheduled tasks directly; background runs would race the assertions.
+  scheduling-enabled: false
+
+logging:
+  level:
+    root: WARN
+    com.sanvi.jobscheduler: INFO

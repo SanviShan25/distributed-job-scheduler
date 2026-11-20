@@ -13,13 +13,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
 import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobStatus;
+import com.sanvi.jobscheduler.support.AbstractIntegrationTest;
 
-@SpringBootTest
-class JobRepositoryClaimTest {
+class JobRepositoryClaimTest extends AbstractIntegrationTest {
 
     @Autowired
     private JobRepository repo;
