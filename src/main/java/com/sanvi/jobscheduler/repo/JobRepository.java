@@ -50,7 +50,7 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.SUCCEEDED, "
-        + "j.leaseToken = null, j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "j.leaseToken = null, j.leaseExpiresAt = null, j.completedAt = :now, j.updatedAt = :now "
         + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
         + "and j.workerId = :workerId and j.leaseToken = :token")
     int markSucceeded(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
@@ -69,7 +69,8 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.DEAD, "
-        + "j.lastError = :lastError, j.leaseToken = null, j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "j.lastError = :lastError, j.leaseToken = null, j.leaseExpiresAt = null, j.completedAt = :now, "
+        + "j.updatedAt = :now "
         + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
         + "and j.workerId = :workerId and j.leaseToken = :token")
     int markDead(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
@@ -89,16 +90,17 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = :newStatus, j.lastError = :lastError, j.leaseToken = null, "
-        + "j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "j.leaseExpiresAt = null, j.completedAt = :completedAt, j.updatedAt = :now "
         + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
         + "and j.workerId = :workerId and j.leaseToken = :token")
     int recoverRunning(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
-        @Param("newStatus") JobStatus newStatus, @Param("lastError") String lastError, @Param("now") Instant now);
+        @Param("newStatus") JobStatus newStatus, @Param("lastError") String lastError,
+        @Param("completedAt") Instant completedAt, @Param("now") Instant now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED, j.attempts = 0, "
-        + "j.lastError = null, j.workerId = null, j.runAt = :now, j.updatedAt = :now "
+        + "j.lastError = null, j.workerId = null, j.completedAt = null, j.runAt = :now, j.updatedAt = :now "
         + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.DEAD")
     int requeueDead(@Param("id") UUID id, @Param("now") Instant now);
 
@@ -114,7 +116,7 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.DEAD, "
-        + "j.lastError = 'max attempts exhausted', j.updatedAt = :now "
+        + "j.lastError = 'max attempts exhausted', j.completedAt = :now, j.updatedAt = :now "
         + "where j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED and j.attempts >= j.maxAttempts")
     int markExhaustedQueuedJobsDead(@Param("now") Instant now);
 

@@ -95,8 +95,9 @@ public class Reaper {
 		boolean exhausted = job.getAttempts() >= job.getMaxAttempts();
 		JobStatus target = exhausted ? JobStatus.DEAD : JobStatus.QUEUED;
 		String error = exhausted ? reason + "; max attempts exhausted" : reason;
+		Instant now = Instant.now();
 		int updated = repo.recoverRunning(job.getId(), job.getWorkerId(), job.getLeaseToken(), target, error,
-			Instant.now());
+			exhausted ? now : null, now);
 		if (updated != 1) {
 			log.debug("Job {} changed state before it could be recovered; leaving it alone", job.getId());
 			return;

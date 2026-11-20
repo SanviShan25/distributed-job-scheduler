@@ -33,4 +33,7 @@ public class Job {
     @JsonIgnore private UUID leaseToken;
     private Instant leaseExpiresAt;
     private int timeoutSeconds;
+    private String idempotencyKey;
+    private UUID cronScheduleId;
+    private Instant completedAt;
 }
