@@ -1,10 +1,10 @@
 package com.sanvi.jobscheduler.repo;
 
 import java.time.Instant;
-import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -14,40 +14,109 @@ import org.springframework.transaction.annotation.Transactional;
 import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobStatus;
 
+/**
+ * Every state transition is a conditional UPDATE: it only applies when the row is still in the
+ * state the caller observed, and returns the number of rows changed (0 = lost the race).
+ */
 public interface JobRepository extends JpaRepository<Job, UUID> {
     List<Job> findByStatus(JobStatus status);
-    List<Job> findByStatusAndWorkerIdNotIn(JobStatus status, Collection<String> aliveWorkers);
-    List<Job> findByStatusAndUpdatedAtBeforeAndRunAtBefore(JobStatus status, Instant updatedAt, Instant runAt);
+
+    List<Job> findByStatusAndLeaseExpiresAtBefore(JobStatus status, Instant now);
+
+    /** Keyset page of jobs in {@code status} not touched since {@code updatedBefore}. */
+    @Query("select j from Job j where j.status = :status and j.updatedAt < :updatedBefore "
+        + "and j.id > :afterId order by j.id")
+    List<Job> findStalePage(@Param("status") JobStatus status, @Param("updatedBefore") Instant updatedBefore,
+        @Param("afterId") UUID afterId, Limit limit);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING, "
-        + "j.workerId = :workerId, j.attempts = j.attempts + 1, j.updatedAt = :now "
-        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED")
-    int claim(@Param("id") UUID id, @Param("workerId") String workerId, @Param("now") Instant now);
+        + "j.workerId = :workerId, j.attempts = j.attempts + 1, j.leaseToken = :token, "
+        + "j.leaseExpiresAt = :leaseExpiresAt, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED "
+        + "and j.attempts < j.maxAttempts")
+    int claim(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("now") Instant now, @Param("leaseExpiresAt") Instant leaseExpiresAt);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update Job j set j.leaseExpiresAt = :leaseExpiresAt, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
+        + "and j.workerId = :workerId and j.leaseToken = :token")
+    int renewLease(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("leaseExpiresAt") Instant leaseExpiresAt, @Param("now") Instant now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.SUCCEEDED, "
-        + "j.updatedAt = :now where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
-        + "and j.workerId = :workerId")
-    int markSucceeded(@Param("id") UUID id, @Param("workerId") String workerId, @Param("now") Instant now);
+        + "j.leaseToken = null, j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
+        + "and j.workerId = :workerId and j.leaseToken = :token")
+    int markSucceeded(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("now") Instant now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED, "
-        + "j.lastError = :lastError, j.updatedAt = :now where j.id = :id "
-        + "and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING and j.workerId = :workerId")
-    int markForRetry(@Param("id") UUID id, @Param("workerId") String workerId,
-        @Param("lastError") String lastError, @Param("now") Instant now);
+        + "j.lastError = :lastError, j.runAt = :runAt, j.leaseToken = null, j.leaseExpiresAt = null, "
+        + "j.updatedAt = :now where j.id = :id "
+        + "and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING and j.workerId = :workerId "
+        + "and j.leaseToken = :token")
+    int markForRetry(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("lastError") String lastError, @Param("runAt") Instant runAt, @Param("now") Instant now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.DEAD, "
-        + "j.lastError = :lastError, j.updatedAt = :now where j.id = :id "
-        + "and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING and j.workerId = :workerId")
-    int markDead(@Param("id") UUID id, @Param("workerId") String workerId,
+        + "j.lastError = :lastError, j.leaseToken = null, j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
+        + "and j.workerId = :workerId and j.leaseToken = :token")
+    int markDead(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
         @Param("lastError") String lastError, @Param("now") Instant now);
+
+    /** Shutdown interrupted the job: hand it back without charging the attempt. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED, "
+        + "j.attempts = j.attempts - 1, j.leaseToken = null, j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
+        + "and j.workerId = :workerId and j.leaseToken = :token")
+    int releaseForShutdown(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("now") Instant now);
+
+    /** Reaper recovery (worker lost / lease expired) to QUEUED or DEAD, only if ownership is unchanged. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update Job j set j.status = :newStatus, j.lastError = :lastError, j.leaseToken = null, "
+        + "j.leaseExpiresAt = null, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.RUNNING "
+        + "and j.workerId = :workerId and j.leaseToken = :token")
+    int recoverRunning(@Param("id") UUID id, @Param("workerId") String workerId, @Param("token") UUID token,
+        @Param("newStatus") JobStatus newStatus, @Param("lastError") String lastError, @Param("now") Instant now);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED, j.attempts = 0, "
+        + "j.lastError = null, j.workerId = null, j.runAt = :now, j.updatedAt = :now "
+        + "where j.id = :id and j.status = com.sanvi.jobscheduler.domain.JobStatus.DEAD")
+    int requeueDead(@Param("id") UUID id, @Param("now") Instant now);
+
+    /** Sweeper: bump updatedAt only if nobody changed the row since it was read. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update Job j set j.updatedAt = :now where j.id = :id and j.status = :status "
+        + "and j.updatedAt = :expectedUpdatedAt")
+    int touchIfUnchanged(@Param("id") UUID id, @Param("status") JobStatus status,
+        @Param("expectedUpdatedAt") Instant expectedUpdatedAt, @Param("now") Instant now);
+
+    /** QUEUED jobs that can never be claimed again (attempts exhausted) go to DEAD. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update Job j set j.status = com.sanvi.jobscheduler.domain.JobStatus.DEAD, "
+        + "j.lastError = 'max attempts exhausted', j.updatedAt = :now "
+        + "where j.status = com.sanvi.jobscheduler.domain.JobStatus.QUEUED and j.attempts >= j.maxAttempts")
+    int markExhaustedQueuedJobsDead(@Param("now") Instant now);
 
     @Query("select j.status as status, count(j) as count from Job j group by j.status")
     List<StatusCount> countJobsByStatus();

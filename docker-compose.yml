@@ -56,6 +56,8 @@ services:
       - -c
       - export WORKER_ID="$$(hostname)"; exec java -jar /app/app.jar
     expose: ["8080"]
+    # Must exceed worker.shutdown-grace-seconds (25s) so in-flight jobs can drain before SIGKILL.
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy

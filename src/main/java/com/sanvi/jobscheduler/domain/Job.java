@@ -3,6 +3,8 @@ package com.sanvi.jobscheduler.domain;
 import java.time.Instant;
 import java.util.UUID;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -27,4 +29,8 @@ public class Job {
     private Instant runAt;
     private Instant createdAt;
     private Instant updatedAt;
+    /** Fencing token issued on claim; every completion update must present it. Internal only. */
+    @JsonIgnore private UUID leaseToken;
+    private Instant leaseExpiresAt;
+    private int timeoutSeconds;
 }

@@ -4,14 +4,43 @@ spring:
       pool:
         size: 4
       thread-name-prefix: sched-
+  lifecycle:
+    # WorkerLoop blocks for up to worker.shutdown-grace-seconds (+5s) while draining.
+    timeout-per-shutdown-phase: 40s
   datasource:
     url: jdbc:postgresql://127.0.0.1:5433/jobs
     username: jobs
     password: jobs
   jpa:
     hibernate.ddl-auto: validate
+    open-in-view: false
   data.redis:
     host: localhost
     port: 6379
+    lettuce:
+      pool:
+        # Blocking BZPOPMIN calls each need a dedicated connection; pool them.
+        enabled: true
+        max-active: 32
+        max-idle: 32
 management:
   endpoints.web.exposure.include: health,prometheus
+
+worker:
+  default-timeout-seconds: 300
+  lease-seconds: 30
+  shutdown-grace-seconds: 25
+  base-backoff-seconds: 1
+  max-backoff-seconds: 300
+  poll-timeout: 2s
+
+scheduler:
+  sweeper:
+    stale-after: 60s
+    recheck-delay: 2s
+    page-size: 500
+    max-candidates: 50000
+    lock-ttl: 60s
+  mover:
+    batch-size: 1000
+    lock-ttl: 5s

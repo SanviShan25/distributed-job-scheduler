@@ -1,6 +1,9 @@
 scheduler:
   # Tests call scheduled tasks directly; background runs would race the assertions.
   scheduling-enabled: false
+  sweeper:
+    recheck-delay: 100ms
+    page-size: 50
 
 logging:
   level:
