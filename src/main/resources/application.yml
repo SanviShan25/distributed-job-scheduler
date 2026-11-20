@@ -7,16 +7,22 @@ spring:
   lifecycle:
     # WorkerLoop blocks for up to worker.shutdown-grace-seconds (+5s) while draining.
     timeout-per-shutdown-phase: 40s
+  autoconfigure:
+    # API-key auth only; no in-memory user / generated password.
+    exclude: org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
+  # All credentials come from the environment (see .env.example). Defaults are for local dev only
+  # and contain no secrets.
   datasource:
-    url: jdbc:postgresql://127.0.0.1:5433/jobs
-    username: jobs
-    password: jobs
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5433/jobs}
+    username: ${DB_USER:jobs}
+    password: ${DB_PASSWORD:}
   jpa:
     hibernate.ddl-auto: validate
     open-in-view: false
   data.redis:
-    host: localhost
-    port: 6379
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
     lettuce:
       pool:
         # Blocking BZPOPMIN calls each need a dedicated connection; pool them.
@@ -25,6 +31,26 @@ spring:
         max-idle: 32
 management:
   endpoints.web.exposure.include: health,prometheus
+
+logging:
+  structured:
+    format:
+      console: ecs
+    ecs:
+      service:
+        name: jobscheduler
+
+security:
+  # Comma-separated list; required for the api profile.
+  api-keys: ${API_KEYS:}
+  rate-limit:
+    enabled: true
+    capacity: 200
+    refill-per-second: 50
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
 
 worker:
   default-timeout-seconds: 300

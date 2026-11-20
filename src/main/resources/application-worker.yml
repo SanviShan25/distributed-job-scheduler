@@ -4,3 +4,9 @@ server:
 worker:
   id: ${WORKER_ID:worker-${server.port}}
   concurrency: ${WORKER_CONCURRENCY:4}
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

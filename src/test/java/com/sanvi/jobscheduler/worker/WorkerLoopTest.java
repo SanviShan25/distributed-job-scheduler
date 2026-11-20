@@ -127,6 +127,32 @@ class WorkerLoopTest {
     }
 
     @Test
+    void handlerLogLinesCarryJobContextInMdc() {
+        Job job = claimable(2, 3);
+        AtomicReference<java.util.Map<String, String>> seen = new AtomicReference<>();
+        loop(handler(p -> seen.set(org.slf4j.MDC.getCopyOfContextMap()))).process(job.getId());
+
+        assertThat(seen.get())
+            .containsEntry("jobId", job.getId().toString())
+            .containsEntry("workerId", WORKER)
+            .containsEntry("attempt", "2");
+        assertThat(org.slf4j.MDC.get("jobId")).as("cleared after processing").isNull();
+    }
+
+    @Test
+    void queueWaitIsRecordedFromRunAtToClaim() {
+        Job job = claimable(1, 3);
+        job.setRunAt(NOW.minusSeconds(4));
+        loop(handler(p -> { })).process(job.getId());
+
+        var timer = metrics.find("job_queue_wait").timer();
+        assertThat(timer.count()).isEqualTo(1);
+        assertThat(timer.totalTime(TimeUnit.SECONDS)).isEqualTo(4.0);
+        assertThat(metrics.find("jobs_completed_total").tagKeys("worker").counter())
+            .as("no high-cardinality worker tag").isNull();
+    }
+
+    @Test
     void retryableFailureSchedulesRetryWithBackoff() {
         Job job = claimable(1, 3);
         loop(handler(p -> { throw new RuntimeException("boom"); })).process(job.getId());

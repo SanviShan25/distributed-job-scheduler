@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Profile;
@@ -50,6 +51,7 @@ public class WorkerLoop implements SmartLifecycle {
     private final JobHandlerRegistry handlers;
     private final MeterRegistry metrics;
     private final Timer jobDurationTimer;
+    private final Timer queueWaitTimer;
     private final WorkerProperties props;
     private final BackoffPolicy backoff;
     private final Clock clock;
@@ -81,6 +83,10 @@ public class WorkerLoop implements SmartLifecycle {
         this.backoff = backoff;
         this.clock = clock;
         this.workerId = props.id();
+        this.queueWaitTimer = Timer.builder("job_queue_wait")
+            .description("Time from when a job became runnable (runAt) until a worker claimed it")
+            .publishPercentileHistogram()
+            .register(metrics);
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -196,6 +202,18 @@ public class WorkerLoop implements SmartLifecycle {
     // ---------------------------------------------------------------- processing
 
     void process(UUID id) {
+        MDC.put("jobId", id.toString());
+        MDC.put("workerId", workerId);
+        try {
+            processWithContext(id);
+        } finally {
+            MDC.remove("jobId");
+            MDC.remove("workerId");
+            MDC.remove("attempt");
+        }
+    }
+
+    private void processWithContext(UUID id) {
         UUID token = UUID.randomUUID();
         Instant now = clock.instant();
         if (repo.claim(id, workerId, token, now, now.plus(props.lease())) == 0) {
@@ -208,6 +226,8 @@ public class WorkerLoop implements SmartLifecycle {
         if (job == null) {
             return;
         }
+        MDC.put("attempt", String.valueOf(job.getAttempts()));
+        recordQueueWait(job, now);
         log.info("Picked up job {} on worker {} (attempt {}/{}) on thread {}", job.getId(), workerId,
             job.getAttempts(), job.getMaxAttempts(), Thread.currentThread().getName());
 
@@ -239,9 +259,17 @@ public class WorkerLoop implements SmartLifecycle {
     }
 
     private Outcome execute(Job job, UUID token, JobHandler handler) {
+        Map<String, String> logContext = MDC.getCopyOfContextMap();
         Future<?> future = handlerExecutor.submit(() -> {
-            handler.handle(job.getPayload());
-            return null;
+            if (logContext != null) {
+                MDC.setContextMap(logContext); // handler log lines carry jobId/workerId/attempt too
+            }
+            try {
+                handler.handle(job.getPayload());
+                return null;
+            } finally {
+                MDC.clear();
+            }
         });
         inFlight.put(job.getId(), future);
         try {
@@ -330,6 +358,13 @@ public class WorkerLoop implements SmartLifecycle {
         }
     }
 
+    private void recordQueueWait(Job job, Instant claimedAt) {
+        Instant runnableSince = job.getRunAt() != null ? job.getRunAt() : job.getCreatedAt();
+        if (runnableSince != null && !claimedAt.isBefore(runnableSince)) {
+            queueWaitTimer.record(Duration.between(runnableSince, claimedAt));
+        }
+    }
+
     private Duration timeoutFor(Job job) {
         int seconds = job.getTimeoutSeconds() > 0 ? job.getTimeoutSeconds() : props.defaultTimeoutSeconds();
         return Duration.ofSeconds(seconds);
@@ -338,7 +373,7 @@ public class WorkerLoop implements SmartLifecycle {
     private void markSucceeded(Job job, UUID token) {
         if (repo.markSucceeded(job.getId(), workerId, token, clock.instant()) > 0) {
             log.info("Job {} succeeded on worker {}", job.getId(), workerId);
-            metrics.counter("jobs_completed_total", "status", "success", "worker", workerId).increment();
+            metrics.counter("jobs_completed_total", "status", "success").increment();
         } else {
             log.warn("Skipped success update for job {}: worker {} no longer owns it", job.getId(), workerId);
         }
@@ -360,7 +395,7 @@ public class WorkerLoop implements SmartLifecycle {
             queue.enqueueDelayed(job.getId(), job.getPriority(), runAt.toEpochMilli());
             log.info("Job {} failed on worker {} (attempt {}/{}); retrying at {}: {}", job.getId(), workerId,
                 job.getAttempts(), job.getMaxAttempts(), runAt, message);
-            metrics.counter("jobs_completed_total", "status", "retry", "worker", workerId).increment();
+            metrics.counter("jobs_completed_total", "status", "retry").increment();
         } else {
             log.warn("Skipped retry update for job {}: worker {} no longer owns it", job.getId(), workerId);
         }
@@ -371,7 +406,7 @@ public class WorkerLoop implements SmartLifecycle {
             queue.toDead(job.getId());
             log.warn("Job {} moved to DEAD on worker {} (attempt {}/{}): {}", job.getId(), workerId,
                 job.getAttempts(), job.getMaxAttempts(), message);
-            metrics.counter("jobs_completed_total", "status", "dead", "worker", workerId).increment();
+            metrics.counter("jobs_completed_total", "status", "dead").increment();
         } else {
             log.warn("Skipped DEAD update for job {}: worker {} no longer owns it", job.getId(), workerId);
         }

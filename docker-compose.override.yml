@@ -1,0 +1,15 @@
+# Local development overrides. Docker Compose merges this file automatically.
+#
+# By default it changes nothing, so Postgres, Redis and the API's actuator port stay private to the
+# Compose network. To reach them from your host (e.g. when running the API/workers from your IDE),
+# replace `services: {}` with the block below. Ports bind to 127.0.0.1 only.
+#
+# services:
+#   postgres:
+#     ports: ["127.0.0.1:5433:5432"]
+#   redis:
+#     ports: ["127.0.0.1:6379:6379"]
+#   api:
+#     ports: ["127.0.0.1:9091:9091"]   # /actuator/health, /actuator/prometheus
+
+services: {}

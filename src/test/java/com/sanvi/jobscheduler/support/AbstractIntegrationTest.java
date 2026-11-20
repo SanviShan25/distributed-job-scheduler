@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.micrometer.metrics.test.autoconfigure.AutoConfigureMetrics;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
@@ -22,8 +23,9 @@ import com.sanvi.jobscheduler.repo.JobRepository;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@AutoConfigureMetrics // export to Prometheus so /actuator/prometheus exists
 @ActiveProfiles({"api", "test"})
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestApiKeyConfiguration.class})
 public abstract class AbstractIntegrationTest {
 
     @Autowired

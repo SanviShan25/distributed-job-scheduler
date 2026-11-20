@@ -1,2 +1,8 @@
 server:
   port: 8080
+
+management:
+  server:
+    # Actuator (health, prometheus) is served on its own port, which docker-compose does not publish:
+    # reachable by Prometheus and health checks on the internal network, not from outside.
+    port: ${MANAGEMENT_PORT:9091}

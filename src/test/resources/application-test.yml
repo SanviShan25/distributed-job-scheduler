@@ -6,6 +6,16 @@ scheduler:
     page-size: 50
   retention-batch-size: 20
 
+security:
+  api-keys: test-key, second-key
+  rate-limit:
+    capacity: 100000
+    refill-per-second: 100000
+
+management:
+  server:
+    port: 8080  # same as server.port -> actuator served by MockMvc
+
 logging:
   level:
     root: WARN
