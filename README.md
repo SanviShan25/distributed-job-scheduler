@@ -26,6 +26,7 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 - [Observability](#observability)
 - [Testing](#testing)
 - [Results](#results)
+- [Monitoring](#monitoring)
 - [Known limitations](#known-limitations)
 
 ---
@@ -381,20 +382,52 @@ export API_KEY=<one of API_KEYS>
 
 ## Results
 
-> Placeholders. Fill these in from your own runs of the scripts above; record the hardware and settings with each run.
+Measured on 2026-11-20 against the Docker Compose stack, using `scripts/load_test.sh` and `scripts/fault_tolerance_test.sh` with their defaults.
 
-**Environment:** _CPU / RAM / OS / Docker version_ · workers: _N × WORKER_CONCURRENCY_ · rate limit: _capacity / refill_
+**Test environment:** 3 workers × `WORKER_CONCURRENCY=4` threads (12 job threads), `JOB_DELAY_MS=200`, 20 concurrent submitters, rate limit `RATE_LIMIT_CAPACITY=200` / `RATE_LIMIT_REFILL_PER_SECOND=50` · Apple M4 (10 cores), 16 GiB RAM (17,179,869,184 bytes), macOS 27.0.1 (26A434) · Docker Desktop 29.9.3 with VM limits of 10 CPUs and 8,319,438,848 bytes of memory.
 
-| Scenario | Jobs | Handler delay | Submission rate (jobs/s) | End-to-end throughput (jobs/s) | p95 queue wait | p95 job duration |
-|---|---|---|---|---|---|---|
-| 1 worker × 4 threads | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| 3 workers × 4 threads | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| 3 workers × 16 threads | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+### Load test (1,000 jobs)
 
-| Fault test | Outcome | Time to recovery |
-|---|---|---|
-| Worker SIGKILL with RUNNING jobs | _TBD_ | _TBD_ |
-| Redis `FLUSHALL` with queued jobs | _TBD_ | _TBD_ |
+| Metric | Value |
+|---|---|
+| Jobs submitted | 1,000 (all accepted) |
+| Submission time | 16 s |
+| Submission rate | 62.50 submissions/s |
+| `429` responses (retried by the script) | 189 |
+| End-to-end time (first submit → 1,000th terminal job) | 22 s |
+| End-to-end throughput | 45.45 jobs/s |
+| Outcome | 1,000 SUCCEEDED, 0 DEAD |
+
+The submission rate is bounded by the per-key rate limit (50 tokens/s after a 200-request burst), not by the API, so these numbers describe the throttled path. Raise `RATE_LIMIT_*` in `.env` to measure raw capacity.
+
+Per-worker split of the 1,000 jobs (from `/jobs/stats` → `succeededByWorker`):
+
+| Worker (container id) | Jobs succeeded |
+|---|---|
+| `d86ffa237f56` | 333 |
+| `d65929aef483` | 330 |
+| `0aca59a01614` | 337 |
+
+### Fault test (worker SIGKILL)
+
+| Metric | Value |
+|---|---|
+| Result | **PASS** |
+| Jobs submitted | 4 × 20 s jobs (`JOB_DELAY_MS=20000`) |
+| Worker killed | `0aca59a01614` (held 2 RUNNING jobs) |
+| Recovered jobs | 2, `lastError = "worker lost (lease expired)"`, succeeded on attempt 2 on the surviving workers |
+| Other jobs | 2 succeeded on attempt 1 |
+| Crash → recovered jobs re-claimed | ≈31 s (SIGKILL at ≈14:08:10 UTC; re-claimed ≈14:08:41, derived as `completedAt` 14:09:01.0 minus the 20 s handler) |
+| Crash → recovered jobs completed | ≈51 s |
+| Final `/jobs/stats` | only `SUCCEEDED`: 0 QUEUED, RUNNING, SCHEDULED or DEAD |
+
+The ≈31 s matches the design: the killed worker claimed the jobs at ≈14:08:08 and had not renewed them yet, so their 30 s leases expired at ≈14:08:38, and the next reaper tick (every 10 s) re-queued them.
+
+## Monitoring
+
+![Grafana "Job Scheduler" dashboard during a load test](docs/images/grafana-dashboard.png)
+
+*The provisioned Grafana "Job Scheduler" dashboard (http://127.0.0.1:3000) during a `load_test.sh` run: submission and completion rates, completions per instance, queue depth, live workers, recoveries, job duration and queue-wait percentiles, timeouts/cancellations and schedule runs.*
 
 ## Known limitations
 
