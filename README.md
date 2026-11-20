@@ -427,7 +427,7 @@ The ≈31 s matches the design: the killed worker claimed the jobs at ≈14:08:0
 
 ![Grafana "Job Scheduler" dashboard during a load test](docs/images/grafana-dashboard.png)
 
-*The provisioned Grafana "Job Scheduler" dashboard (http://127.0.0.1:3000) during a `load_test.sh` run: submission and completion rates, completions per instance, queue depth, live workers, recoveries, job duration and queue-wait percentiles, timeouts/cancellations and schedule runs.*
+*The provisioned Grafana "Job Scheduler" dashboard (http://127.0.0.1:3000) in kiosk mode, showing two 5,000-job `load_test.sh` runs. Submissions plateau at about 50/s (the per-key rate limit) and completions keep pace; the work is spread evenly across the three workers; the ready queue peaks at about 250 and drains each time; p95 job duration sits just above the 200 ms handler delay. Further panels (queue wait, timeouts/cancellations, schedule runs) are below the fold. The `:8080` series in the per-instance legend are from before the workers' metrics moved to port 9091.*
 
 ## Known limitations
 
