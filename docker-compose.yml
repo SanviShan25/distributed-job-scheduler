@@ -32,7 +32,8 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      SPRING_PROFILES_ACTIVE: api
+      # "dev" seeds the PulseCheck dev user that /api/monitors acts as until login exists.
+      SPRING_PROFILES_ACTIVE: api,dev
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-jobs}
       DB_USER: ${POSTGRES_USER:-jobs}
       DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}

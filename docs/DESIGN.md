@@ -78,3 +78,37 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
 - **Deleted or paused monitors are no-ops**, checked twice: before the request (to avoid needless
   traffic) and again under the row lock (in case the user paused or deleted it mid-check, in which case
   the result is discarded).
+
+### Monitor lifecycle and REST API
+
+- **Monitor and schedule change in one transaction.** The recurring check is a `job_schedules` row
+  (named `monitor:{id}`, type `HTTP_CHECK`, payload = monitor id) in the same Postgres database as the
+  monitor, so create/update/pause/resume/delete change both atomically. Redis is not involved in
+  keeping them in sync.
+- **The immediate check is enqueued after commit.** Its job row is inserted in the same transaction
+  (status QUEUED) and pushed to Redis in an `afterCommit` hook. Enqueueing before commit could let a
+  worker pop the id before the row is visible, fail the claim and drop it. If Redis is down at that
+  moment, the row is still QUEUED in Postgres and the scheduler's drift sweeper enqueues it within
+  about a minute; that is the recovery path, so no extra outbox is needed.
+- **Each monitor gets its own cron offset.** The second (and, for 5/15/60-minute intervals, the minute)
+  is derived from the monitor id, e.g. `37 3/5 * * * *`. Monitors with the same interval are spread
+  across the period instead of all firing at second 0. The schedule's misfire policy (run once, skip
+  missed runs) means a long scheduler outage produces one catch-up check, not a burst.
+- **Limits are race-free.** Creating a monitor locks the user row (`SELECT … FOR UPDATE`) before
+  counting, so two parallel requests cannot both create monitor #10. Duplicate URLs are rejected by an
+  application check (friendly message) backed by the `(user_id, url)` unique constraint. URLs are
+  compared in normalised form (lower-case scheme and host, `/` for an empty path).
+- **Changing a monitor's URL starts over:** status UNKNOWN, failure count 0, any open incident is
+  resolved (it described a different site), and a check runs immediately.
+- **Pausing leaves an open incident open.** Whether the outage ended is unknown until the next check
+  after resuming; that check resolves it if the site is back, or keeps it (no duplicate) if not.
+- **Uptime is computed in SQL** with `FILTER` aggregates over one indexed range scan of the last 30
+  days, using the database clock: uptime % for 24 h / 7 d / 30 d, and the average response time of
+  *successful* checks in the last 24 h (timeouts would otherwise dominate it). Windows with no checks
+  return null rather than 0 % or 100 %.
+- **Temporary auth.** `/api/**` uses the scheduler's `X-API-Key`, and every request acts as the dev
+  user (`CurrentUser`), seeded only under the `dev` profile, which docker-compose now enables for the
+  API. If the dev user is missing, the API answers 503 with an explanation instead of failing obscurely.
+  `CurrentUser` is the single place to change when real login arrives.
+- **Retention:** check results older than 90 days are deleted daily at 03:30 UTC in batches of 5,000,
+  under a Redis lock so only one API instance does it.

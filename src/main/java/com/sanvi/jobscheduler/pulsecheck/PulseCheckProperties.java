@@ -10,11 +10,17 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *
  * @param devUserEmail account seeded by {@link DevUserSeeder} under the {@code dev} profile
  * @param checker      HTTP check behaviour and SSRF guard rails
+ * @param maxMonitorsPerUser    monitors one user may create
+ * @param retentionDays         check results older than this are deleted daily
+ * @param retentionBatchSize    rows deleted per statement by the retention job
  */
 @ConfigurationProperties(prefix = "pulsecheck")
 public record PulseCheckProperties(
     @DefaultValue("dev@pulsecheck.local") String devUserEmail,
-    @DefaultValue Checker checker) {
+    @DefaultValue Checker checker,
+    @DefaultValue("10") int maxMonitorsPerUser,
+    @DefaultValue("90") int retentionDays,
+    @DefaultValue("5000") int retentionBatchSize) {
 
     /**
      * @param timeout       total budget for one check, across all redirect hops

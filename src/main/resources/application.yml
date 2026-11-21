@@ -48,6 +48,21 @@ security:
     capacity: 200
     refill-per-second: 50
 
+pulsecheck:
+  # Created at startup under the "dev" profile; the API acts as this user until login exists.
+  dev-user-email: dev@pulsecheck.local
+  max-monitors-per-user: 10
+  retention-days: 90
+  retention-batch-size: 5000
+  retention-cron: "0 30 3 * * *"
+  checker:
+    timeout: 10s
+    max-redirects: 5
+    max-body-bytes: 65536
+    user-agent: PulseCheck/1.0
+    # TEST ONLY. Never enable where real users can create monitors.
+    allow-loopback: false
+
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
