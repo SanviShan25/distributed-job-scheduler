@@ -126,11 +126,17 @@ public class UrlSafetyValidator {
         }
         for (InetAddress address : addresses) {
             if (isBlocked(address)) {
-                throw new UnsafeUrlException(url.host() + " resolves to a private or reserved address ("
-                    + address.getHostAddress() + ")");
+                throw new UnsafeUrlException(isIpLiteral(url.host())
+                    ? url.host() + " is a private or reserved address"
+                    : url.host() + " resolves to a private or reserved address (" + address.getHostAddress() + ")");
             }
         }
         return new Target(url, List.of(addresses));
+    }
+
+    /** True if the URL host is an IP address rather than a name (HttpUrl gives IPv6 hosts without brackets). */
+    private static boolean isIpLiteral(String host) {
+        return host.contains(":") || host.matches("\\d{1,3}(\\.\\d{1,3}){3}");
     }
 
     public boolean isBlocked(InetAddress address) {

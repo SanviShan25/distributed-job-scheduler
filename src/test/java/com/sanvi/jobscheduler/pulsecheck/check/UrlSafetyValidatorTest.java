@@ -114,6 +114,16 @@ class UrlSafetyValidatorTest {
     }
 
     @Test
+    void rawIpsAreDescribedWithoutRepeatingTheAddress() {
+        assertThatThrownBy(() -> strict.validate("http://169.254.169.254/latest/meta-data/"))
+            .hasMessage("169.254.169.254 is a private or reserved address");
+        assertThatThrownBy(() -> strict.validate("http://[::1]:8080/"))
+            .hasMessage("::1 is a private or reserved address");
+        assertThatThrownBy(() -> strict.validate("http://localhost/"))
+            .hasMessageStartingWith("localhost resolves to a private or reserved address (");
+    }
+
+    @Test
     void hostIsRejectedIfAnyOfItsAddressesIsPrivate() {
         assertThatThrownBy(() -> resolvingTo("93.184.215.14", "169.254.169.254").validate("https://mixed.example.com/"))
             .hasMessageContaining("169.254.169.254");
