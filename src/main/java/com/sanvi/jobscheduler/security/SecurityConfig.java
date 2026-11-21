@@ -18,7 +18,7 @@ import jakarta.servlet.http.HttpServletResponse;
 /**
  * Stateless API-key security.
  * <ul>
- *   <li>{@code /jobs/**}, {@code /schedules/**}: require a valid {@code X-API-Key}</li>
+ *   <li>{@code /jobs/**}, {@code /schedules/**}, {@code /api/**} (PulseCheck): require a valid {@code X-API-Key}</li>
  *   <li>{@code /actuator/health/**}, {@code /actuator/prometheus}: open. On the API these are served on
  *       the separate management port ({@code MANAGEMENT_PORT}, default 9091), which Compose does not
  *       publish, so they are only reachable from the internal network (Prometheus, health checks).</li>
@@ -58,6 +58,8 @@ public class SecurityConfig {
                 .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs", "/v3/api-docs/**").permitAll()
                 .requestMatchers("/error").permitAll()
                 .requestMatchers("/jobs", "/jobs/**", "/schedules", "/schedules/**").authenticated()
+                // PulseCheck: API key for now; real user login comes later.
+                .requestMatchers("/api/**").authenticated()
                 .anyRequest().denyAll());
         return http.build();
     }
