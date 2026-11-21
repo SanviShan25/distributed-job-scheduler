@@ -21,6 +21,7 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 - [Failure scenarios handled](#failure-scenarios-handled)
 - [Design trade-offs](#design-trade-offs)
 - [Quick start (Docker Compose)](#quick-start-docker-compose)
+- [PulseCheck (in progress)](#pulsecheck-in-progress)
 - [Running from an IDE](#running-from-an-ide)
 - [Configuration reference](#configuration-reference)
 - [API reference](#api-reference)
@@ -202,6 +203,74 @@ curl -s -X POST localhost:8080/jobs -H "X-API-Key: $API_KEY" -H 'Content-Type: a
 Postgres, Redis and the API's actuator port (9091) are **not published** to the host. To reach them, edit `docker-compose.override.yml` (Compose merges it automatically).
 
 > **Upgrading an existing deployment:** `POSTGRES_PASSWORD` only takes effect when the `pgdata` volume is first created. If you already have a volume from the old setup (password `jobs`), either set `POSTGRES_PASSWORD=jobs` in `.env` or recreate the volume. Flyway applies migrations V2–V4 on startup.
+
+## PulseCheck (in progress)
+
+**PulseCheck** is a website uptime monitor for non-technical users, built on top of this scheduler. The scheduler is the engine: each monitor is a recurring `HTTP_CHECK` schedule, and every check is an ordinary job, with the same retries, leases and recovery.
+
+**Status:** backend core only — monitors, HTTP checks, status, incidents, uptime and SSRF protection. There is no login, alert email or web UI yet. Until login exists, `/api/monitors` is protected by the scheduler's `X-API-Key` and every request acts as a seeded dev user (the Compose API runs with the `dev` profile for this).
+
+**How it works**
+
+- A monitor checks one URL every 60, 300, 900 or 3600 seconds (at most 10 monitors per user, no duplicate URLs). Creating one runs a first check immediately.
+- A check is **up** for any 2xx/3xx response (up to 5 redirects followed) and **down** for anything else, a 10 s timeout, or a connection error.
+- A monitor turns **DOWN** after 2 failed checks in a row and **UP** again after 1 success. Going DOWN opens an **incident** (starting at the first failed check); coming back UP resolves it. Retries can never create duplicate incidents.
+- `GET /api/monitors/{id}` includes uptime for the last 24 h, 7 d and 30 d, plus the average response time.
+- **SSRF protection:** only public http(s) URLs can be monitored. Every address a host resolves to must be public (private, loopback, link-local/cloud-metadata, CGNAT and similar ranges are refused). The check connects only to the address that was validated, so DNS rebinding can't redirect it, and every redirect hop is validated again.
+
+Design decisions are recorded in [docs/DESIGN.md](docs/DESIGN.md#pulsecheck).
+
+**Endpoints** (all need `X-API-Key`)
+
+| Method & path | Description |
+|---|---|
+| `POST /api/monitors` | Create: `name`, `url`, `intervalSeconds` (60/300/900/3600), optional `alertEmails` |
+| `GET /api/monitors` | List my monitors |
+| `GET /api/monitors/{id}` | One monitor, with its uptime summary |
+| `PATCH /api/monitors/{id}` | Change name, URL, interval or alert emails |
+| `POST /api/monitors/{id}/pause`, `/resume` | Stop / restart checks |
+| `DELETE /api/monitors/{id}` | Delete the monitor, its history and its schedule |
+| `GET /api/monitors/{id}/checks?from=&to=&page=&size=` | Check history, newest first (`from`/`to` are ISO-8601) |
+| `GET /api/monitors/{id}/incidents` | Incidents, newest first |
+
+**Try it** (with the Compose stack running):
+
+```bash
+export API_KEY=$(grep '^API_KEYS=' .env | cut -d= -f2 | cut -d, -f1)
+
+# A healthy site and one that always returns HTTP 500
+curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"name":"Example","url":"https://example.com","intervalSeconds":60}'
+curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"name":"Always 500","url":"https://httpbin.org/status/500","intervalSeconds":60}'
+
+# After about a minute (DOWN needs two failed checks)
+curl -s localhost:8080/api/monitors -H "X-API-Key: $API_KEY" | jq -c '.[] | {name, status, consecutiveFailures}'
+MONITOR_ID=<id from the create response>
+curl -s localhost:8080/api/monitors/$MONITOR_ID -H "X-API-Key: $API_KEY" | jq '{status, uptime}'
+curl -s localhost:8080/api/monitors/$MONITOR_ID/incidents -H "X-API-Key: $API_KEY" | jq '.content'
+curl -s "localhost:8080/api/monitors/$MONITOR_ID/checks?size=5" -H "X-API-Key: $API_KEY" | jq -c '.content[]'
+
+# Internal addresses are refused with 400
+curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"name":"metadata","url":"http://169.254.169.254/latest/meta-data/","intervalSeconds":60}' | jq -r .detail
+curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"name":"local","url":"http://localhost:8080/jobs/stats","intervalSeconds":60}' | jq -r .detail
+```
+
+What a live run on 2026-11-21 returned, about 45 s after creating both monitors:
+
+| Monitor | Status | Checks | Uptime 24 h | Avg response | Incident |
+|---|---|---|---|---|---|
+| `https://example.com/` | UP | 2 × HTTP 200 | 100.0 % | 164 ms | none |
+| `https://httpbin.org/status/500` | DOWN (on the 2nd failure) | 2 × HTTP 500 | 0.0 % | — | 1 ongoing, cause `HTTP 500` |
+
+```text
+$ … url=http://169.254.169.254/latest/meta-data/
+This URL can't be monitored: 169.254.169.254 is a private or reserved address
+$ … url=http://localhost:8080/jobs/stats
+This URL can't be monitored: localhost resolves to a private or reserved address (127.0.0.1)
+```
 
 ## Running from an IDE
 
