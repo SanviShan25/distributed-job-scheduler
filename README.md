@@ -441,3 +441,4 @@ The ≈31 s matches the design: the killed worker claimed the jobs at ≈14:08:0
 - **Single Redis.** No Redis Cluster/Sentinel configuration is included.
 - **Handler registry is shared.** The API validates `type` against the handlers on its own classpath, so API and workers must ship the same handler set.
 - **API keys are static** (environment config): no per-key scopes, rotation endpoint or key store.
+# distributed-job-scheduler
