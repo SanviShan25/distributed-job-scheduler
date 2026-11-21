@@ -190,7 +190,7 @@ class PulseCheckSchemaIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void devUserSeederIsIdempotent() {
-        DevUserSeeder seeder = new DevUserSeeder(jdbc, new PulseCheckProperties("seed@pulsecheck.local"));
+        DevUserSeeder seeder = new DevUserSeeder(jdbc, new PulseCheckProperties("seed@pulsecheck.local", PulseCheckProperties.Checker.defaults()));
         seeder.run(null);
         seeder.run(null);
 
