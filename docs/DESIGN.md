@@ -53,3 +53,28 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   "blocked", because the site may simply be misconfigured or down.
 - **`pulsecheck.checker.allow-loopback`** (default `false`) exists only so tests can hit a local
   MockWebServer. It unblocks 127.0.0.0/8 and ::1 and nothing else, and logs a warning at startup when on.
+
+### HTTP_CHECK jobs, status and incidents
+
+- **The HTTP request runs outside any transaction.** `MonitorCheckService` loads the monitor, runs the
+  check (up to 10 s), and only then opens a short transaction to record it. Holding a DB connection
+  across a slow website would let a handful of slow sites exhaust the connection pool.
+- **The recording transaction locks the monitor row** (`SELECT … FOR UPDATE`). An immediate check and
+  a scheduled check of the same monitor can overlap; the lock makes their read-modify-write of
+  `consecutive_failures` and `current_status` sequential, so no failure is lost.
+- **Incidents are idempotent by construction.** Opening is `INSERT … ON CONFLICT (monitor_id) WHERE
+  resolved_at IS NULL DO NOTHING` against the one-open-incident partial unique index, and resolving is
+  `UPDATE … WHERE resolved_at IS NULL`. The rule is simply "DOWN ⇒ an incident is open, UP ⇒ none is",
+  applied on every check, so a retried job, a duplicate job or two concurrent checks converge on
+  exactly one incident. Using `ON CONFLICT` rather than catching a unique violation matters: in Postgres
+  a failed statement aborts the whole transaction.
+- **Status rule:** DOWN after 2 consecutive failures; UP after 1 success. One failure keeps the
+  previous status (UP stays UP, UNKNOWN stays UNKNOWN), which filters out one-off network blips.
+- **`incidents.started_at` is the time of the first failure in the streak**, not the moment DOWN was
+  confirmed, so the reported outage duration is honest (it is one interval longer than "confirmed DOWN").
+- **A down website is a successful job.** The checker reports site problems as data; only unexpected
+  errors (e.g. the database being unreachable) throw, which makes the scheduler retry the job. A
+  malformed payload is a `NonRetryableJobException` (straight to DEAD).
+- **Deleted or paused monitors are no-ops**, checked twice: before the request (to avoid needless
+  traffic) and again under the row lock (in case the user paused or deleted it mid-check, in which case
+  the result is discarded).

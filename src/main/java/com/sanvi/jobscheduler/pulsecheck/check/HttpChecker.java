@@ -42,16 +42,16 @@ import okio.BufferedSource;
  * </ul>
  */
 @Component
-public class HttpChecker {
+public class HttpChecker implements SiteChecker {
     private static final int MAX_ERROR_LENGTH = 500;
 
     /** Result of one check. {@code statusCode} is null when no HTTP response was received. */
     public record Outcome(boolean up, Integer statusCode, int responseMs, String error) {
-        static Outcome up(int status, int ms) {
+        public static Outcome up(int status, int ms) {
             return new Outcome(true, status, ms, null);
         }
 
-        static Outcome down(Integer status, int ms, String error) {
+        public static Outcome down(Integer status, int ms, String error) {
             String message = error.length() > MAX_ERROR_LENGTH ? error.substring(0, MAX_ERROR_LENGTH) : error;
             return new Outcome(false, status, ms, message);
         }
@@ -80,6 +80,7 @@ public class HttpChecker {
             .build();
     }
 
+    @Override
     public Outcome check(String url) {
         long start = System.nanoTime();
         long deadline = start + config.timeout().toNanos();
