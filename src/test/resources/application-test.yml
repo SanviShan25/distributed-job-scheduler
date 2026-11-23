@@ -6,6 +6,11 @@ scheduler:
     page-size: 50
   retention-batch-size: 20
 
+pulsecheck:
+  auth:
+    # Many tests sign up / log in repeatedly from 127.0.0.1; AuthRateLimitIntegrationTest turns this on.
+    rate-limits-enabled: false
+
 security:
   api-keys: test-key, second-key
   rate-limit:

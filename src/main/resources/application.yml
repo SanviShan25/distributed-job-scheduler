@@ -56,6 +56,13 @@ security:
     refill-per-second: 50
 
 pulsecheck:
+  auth:
+    rate-limits-enabled: true
+    login-per-ip-per-minute: 10
+    login-per-email-per-minute: 5
+    signup-per-ip-per-hour: 5
+    max-failed-logins: 10
+    lock-duration: 15m
   session:
     cookie-name: PULSECHECK_SESSION
     # AUTO = Secure everywhere except localhost (plain-HTTP development). ALWAYS / NEVER override.

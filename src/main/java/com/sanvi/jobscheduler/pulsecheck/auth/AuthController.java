@@ -44,6 +44,7 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class AuthController {
     private final AccountService accounts;
+    private final AuthRateLimiter rateLimiter;
     private final AppUserRepository users;
     private final SecurityContextRepository securityContextRepository;
     private final CsrfTokenRepository csrfTokenRepository;
@@ -66,7 +67,9 @@ public class AuthController {
     public record CsrfResponse(String headerName, String cookieName, String token) {}
 
     @PostMapping("/signup")
-    public ResponseEntity<SignupResponse> signup(@RequestBody @Valid SignupRequest request) {
+    public ResponseEntity<SignupResponse> signup(@RequestBody @Valid SignupRequest request,
+            HttpServletRequest httpRequest) {
+        rateLimiter.checkSignup(clientIp(httpRequest));
         AccountService.SignupResult result = accounts.signup(request.email(), request.password());
         return ResponseEntity.status(HttpStatus.CREATED).body(new SignupResponse(result.email(),
             result.emailVerified(), "Account created. Check your inbox to verify your email address."));
@@ -79,6 +82,7 @@ public class AuthController {
     @PostMapping("/login")
     public MeResponse login(@RequestBody @Valid LoginRequest request, HttpServletRequest httpRequest,
             HttpServletResponse httpResponse) {
+        rateLimiter.checkLogin(clientIp(httpRequest), EmailAddresses.normalize(request.email()));
         AppUser user = accounts.authenticate(request.email(), request.password());
         boolean rememberMe = Boolean.TRUE.equals(request.rememberMe());
         if (rememberMe) {
@@ -140,6 +144,14 @@ public class AuthController {
             csrfTokenRepository.saveToken(token, request, response);
         }
         return new CsrfResponse(token.getHeaderName(), "XSRF-TOKEN", token.getToken());
+    }
+
+    /**
+     * The TCP peer address. Forwarded headers are not trusted here: behind a reverse proxy, configure
+     * {@code server.forward-headers-strategy} so the container resolves the real client address.
+     */
+    private static String clientIp(HttpServletRequest request) {
+        return request.getRemoteAddr();
     }
 
     private void rotateCsrfToken(HttpServletRequest request, HttpServletResponse response) {

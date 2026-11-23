@@ -185,3 +185,29 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   at all. A 403 would confirm that the id is real, which lets ids be probed.
 - **Limits and duplicates are per user:** two users may monitor the same URL, and one user's
   10-monitor limit does not affect anyone else.
+
+### Brute-force protection
+
+- **Rate limits are Redis token buckets** (the same Lua limiter as `POST /jobs`), shared by every API
+  instance: login 10/min per client IP and 5/min per email, sign-up 5/hour per client IP. Over the limit
+  is `429` with `Retry-After`. Every attempt counts, successful or not. Email buckets are keyed by a
+  SHA-256 fingerprint, so addresses never appear in Redis key names. If Redis is unavailable the limiter
+  fails open; the database-backed lockout below still applies.
+- **Client IP is the TCP peer address.** `X-Forwarded-For` is not read directly (it is trivially
+  spoofed); behind a reverse proxy, set `server.forward-headers-strategy` so the container resolves
+  the real client address from a trusted proxy.
+- **Lockout:** 10 wrong passwords in a row lock the account for 15 minutes. The counter and lock are
+  updated in one atomic SQL statement (parallel failures cannot under-count) using the database clock.
+  Reaching the limit restarts the counter, so after the lock expires it takes another 10 failures to
+  lock again; a successful login resets it. Attempts during a lock do not extend it.
+- **A locked account still answers "Invalid email or password".** A distinct "account locked" message
+  would confirm that the email has an account. The trade-off is that a locked-out user sees the same
+  message as a typo; the alert emails planned for Day 4 can tell them their account was locked.
+- **Every login path does exactly one Argon2 verification** (unknown email: a dummy hash; locked account:
+  the real hash, result ignored), so response time does not reveal whether an account exists or is
+  locked. A test checks that unknown emails take between 0.5× and 2× as long as wrong passwords.
+- **Known trade-off: lockout can be abused to lock someone out on purpose** (deliberate wrong
+  passwords). The 5/min per-email limit means an attacker needs at least two minutes per 15-minute lock.
+  Password reset (next step) works during a lock.
+- **Tests:** the shared test profile turns the rate limits off (many tests sign up repeatedly from
+  127.0.0.1); `AuthRateLimitIntegrationTest` turns them on in its own context.

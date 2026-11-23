@@ -31,13 +31,16 @@ public class AccountService {
     private final JdbcTemplate jdbc;
     private final PasswordEncoder passwordEncoder;
     private final AppUserRepository users;
+    private final AuthProtectionProperties protection;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
-    public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users) {
+    public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
+            AuthProtectionProperties protection) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
+        this.protection = protection;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -70,9 +73,15 @@ public class AccountService {
     }
 
     /**
-     * Checks an email/password pair. Every failure (unknown email, account without a password, wrong
-     * password) produces the same "Invalid email or password" error, and unknown emails still run a full
-     * hash comparison so the response time does not reveal whether the account exists.
+     * Checks an email/password pair.
+     * <ul>
+     *   <li>Every failure (unknown email, account without a password, wrong password, locked account)
+     *       produces the same "Invalid email or password" error, and every path runs exactly one full
+     *       hash check, so neither the message nor the timing reveals whether the account exists.</li>
+     *   <li>{@code maxFailedLogins} wrong passwords in a row lock the account for {@code lockDuration}
+     *       (database clock). While locked, even the right password is refused, and attempts do not extend
+     *       the lock. A successful login resets the counter.</li>
+     * </ul>
      */
     public AppUser authenticate(String rawEmail, String password) {
         String email = EmailAddresses.normalize(rawEmail);
@@ -82,10 +91,40 @@ public class AccountService {
             passwordEncoder.matches(candidate, dummyHash);
             throw invalidCredentials();
         }
-        if (!passwordEncoder.matches(candidate, user.getPasswordHash())) {
+        boolean passwordMatches = passwordEncoder.matches(candidate, user.getPasswordHash());
+        if (isLocked(user)) {
             throw invalidCredentials();
         }
+        if (!passwordMatches) {
+            recordFailedLogin(user);
+            throw invalidCredentials();
+        }
+        if (user.getFailedLoginCount() > 0 || user.getLockedUntil() != null) {
+            jdbc.update("update users set failed_login_count = 0, locked_until = null where id = ?", user.getId());
+        }
         return user;
+    }
+
+    private boolean isLocked(AppUser user) {
+        Boolean locked = jdbc.queryForObject(
+            "select coalesce(locked_until > now(), false) from users where id = ?", Boolean.class, user.getId());
+        return Boolean.TRUE.equals(locked);
+    }
+
+    /** Atomic: concurrent failures cannot under-count. Reaching the limit locks and restarts the count. */
+    private void recordFailedLogin(AppUser user) {
+        int max = protection.maxFailedLogins();
+        Boolean nowLocked = jdbc.queryForObject("""
+            update users set
+              locked_until = case when failed_login_count + 1 >= ? then now() + make_interval(secs => ?)
+                                  else locked_until end,
+              failed_login_count = case when failed_login_count + 1 >= ? then 0 else failed_login_count + 1 end
+            where id = ?
+            returning locked_until > now()
+            """, Boolean.class, max, (double) protection.lockDuration().toSeconds(), max, user.getId());
+        if (Boolean.TRUE.equals(nowLocked)) {
+            log.warn("Account {} locked for {} after {} failed logins", user.getId(), protection.lockDuration(), max);
+        }
     }
 
     public static ErrorResponseException invalidCredentials() {
