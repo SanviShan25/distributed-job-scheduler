@@ -187,14 +187,4 @@ class PulseCheckSchemaIntegrationTest extends AbstractIntegrationTest {
         assertThat(defs).anyMatch(d -> d.contains("(monitor_id, checked_at DESC)"));
         assertThat(defs).anyMatch(d -> d.contains("UNIQUE") && d.contains("(monitor_id) WHERE (resolved_at IS NULL)"));
     }
-
-    @Test
-    void devUserSeederIsIdempotent() {
-        DevUserSeeder seeder = new DevUserSeeder(jdbc, new PulseCheckProperties("seed@pulsecheck.local", PulseCheckProperties.Checker.defaults(), 10, 90, 5000));
-        seeder.run(null);
-        seeder.run(null);
-
-        assertThat(users.findByEmail("seed@pulsecheck.local")).isPresent();
-        assertThat(users.count()).isEqualTo(1);
-    }
 }

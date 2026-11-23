@@ -208,9 +208,9 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 
 **PulseCheck** is a website uptime monitor for non-technical users, built on top of this scheduler. The scheduler is the engine: each monitor is a recurring `HTTP_CHECK` schedule, and every check is an ordinary job, with the same retries, leases and recovery.
 
-**Status:** backend core only — monitors, HTTP checks, status, incidents, uptime and SSRF protection. There is no login, alert email or web UI yet. Until login exists, `/api/monitors` is protected by the scheduler's `X-API-Key` and every request acts as a seeded dev user (the Compose API runs with the `dev` profile for this).
+**Status:** backend only: user accounts, monitors, HTTP checks, status, incidents, uptime and SSRF protection. There is no web UI yet, and emails are written to the API log instead of being sent (a real email provider comes next).
 
-**How it works**
+**How monitoring works**
 
 - A monitor checks one URL every 60, 300, 900 or 3600 seconds (at most 10 monitors per user, no duplicate URLs). Creating one runs a first check immediately.
 - A check is **up** for any 2xx/3xx response (up to 5 redirects followed) and **down** for anything else, a 10 s timeout, or a connection error.
@@ -218,9 +218,35 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 - `GET /api/monitors/{id}` includes uptime for the last 24 h, 7 d and 30 d, plus the average response time.
 - **SSRF protection:** only public http(s) URLs can be monitored. Every address a host resolves to must be public (private, loopback, link-local/cloud-metadata, CGNAT and similar ranges are refused). The check connects only to the address that was validated, so DNS rebinding can't redirect it, and every redirect hop is validated again.
 
-Design decisions are recorded in [docs/DESIGN.md](docs/DESIGN.md#pulsecheck).
+**Accounts and security**
 
-**Endpoints** (all need `X-API-Key`)
+- **Sign up** with email and password (10–128 characters, hashed with Argon2id), then **verify the email** through the emailed link before creating monitors. Sign-up gives the same answer for an email that is already registered, so it can't be used to find out who has an account.
+- **Log in** to get a session cookie (`PULSECHECK_SESSION`: HttpOnly, SameSite=Lax, Secure except on localhost). Sessions live in Redis: 1 day idle, or 30 days with `"rememberMe": true`. Logging in always issues a new session id.
+- **CSRF:** every `POST`/`PATCH`/`DELETE` under `/api` needs the value of the `XSRF-TOKEN` cookie in an `X-XSRF-TOKEN` header. `GET /api/auth/csrf` sets the cookie. A browser app should read the cookie right before each request, because it changes at login and logout.
+- **Each user sees only their own data:** someone else's monitor answers 404, exactly like one that doesn't exist.
+- **Brute-force protection:** login 10/min per IP and 5/min per email, sign-up 5/hour per IP (`429` + `Retry-After`). 10 wrong passwords in a row lock the account for 15 minutes. Every login failure says "Invalid email or password".
+- **Password reset** links last 1 hour and log out all of the user's sessions. Verification links last 24 hours. Both work once, and only a hash of each is stored.
+- `/api/**` uses these accounts only: the scheduler's `X-API-Key` does not work there, and `/jobs/**` and `/schedules/**` still use only the API key.
+
+Design decisions, including exactly how a frontend must handle CSRF, are in [docs/DESIGN.md](docs/DESIGN.md#pulsecheck).
+
+**Account endpoints**
+
+| Method & path | Who | Description |
+|---|---|---|
+| `GET /api/auth/csrf` | anyone | Sets the `XSRF-TOKEN` cookie; returns the header name and token |
+| `POST /api/auth/signup` | anyone | `{email, password}`; sends the verification link |
+| `POST /api/auth/verify` | anyone | `{token}` from the verification link |
+| `POST /api/auth/login` | anyone | `{email, password, rememberMe?}`; starts a session |
+| `POST /api/auth/forgot-password` | anyone | `{email}`; always the same answer |
+| `POST /api/auth/reset-password` | anyone | `{token, newPassword}`; logs out every session |
+| `GET /api/auth/me` | logged in | The current user |
+| `POST /api/auth/logout` | logged in | Ends the session |
+| `POST /api/auth/resend-verification` | logged in | New verification link (3/hour) |
+| `POST /api/auth/change-password` | logged in | `{currentPassword, newPassword}`; logs out other sessions |
+| `DELETE /api/auth/account` | logged in | `{password}`; deletes the account, its monitors and all their data |
+
+**Monitor endpoints** (logged in; creating needs a verified email)
 
 | Method & path | Description |
 |---|---|
@@ -233,42 +259,90 @@ Design decisions are recorded in [docs/DESIGN.md](docs/DESIGN.md#pulsecheck).
 | `GET /api/monitors/{id}/checks?from=&to=&page=&size=` | Check history, newest first (`from`/`to` are ISO-8601) |
 | `GET /api/monitors/{id}/incidents` | Incidents, newest first |
 
-**Try it** (with the Compose stack running):
+**Try it** (with the Compose stack running; needs `curl`, `jq` and `awk`)
+
+Each user gets a curl cookie jar, which plays the part of the browser. `xsrf` reads the current CSRF token from a jar. (Sign-up is limited to 5 per hour per IP address; if you repeat the walkthrough with new emails several times, wait or expect a `429`.)
 
 ```bash
-export API_KEY=$(grep '^API_KEYS=' .env | cut -d= -f2 | cut -d, -f1)
-
-# A healthy site and one that always returns HTTP 500
-curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d '{"name":"Example","url":"https://example.com","intervalSeconds":60}'
-curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d '{"name":"Always 500","url":"https://httpbin.org/status/500","intervalSeconds":60}'
-
-# After about a minute (DOWN needs two failed checks)
-curl -s localhost:8080/api/monitors -H "X-API-Key: $API_KEY" | jq -c '.[] | {name, status, consecutiveFailures}'
-MONITOR_ID=<id from the create response>
-curl -s localhost:8080/api/monitors/$MONITOR_ID -H "X-API-Key: $API_KEY" | jq '{status, uptime}'
-curl -s localhost:8080/api/monitors/$MONITOR_ID/incidents -H "X-API-Key: $API_KEY" | jq '.content'
-curl -s "localhost:8080/api/monitors/$MONITOR_ID/checks?size=5" -H "X-API-Key: $API_KEY" | jq -c '.content[]'
-
-# Internal addresses are refused with 400
-curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d '{"name":"metadata","url":"http://169.254.169.254/latest/meta-data/","intervalSeconds":60}' | jq -r .detail
-curl -s -X POST localhost:8080/api/monitors -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d '{"name":"local","url":"http://localhost:8080/jobs/stats","intervalSeconds":60}' | jq -r .detail
+xsrf() { awk '$6=="XSRF-TOKEN"{t=$7} END{print t}' "$1"; }
+ALICE=$(mktemp)
+BOB=$(mktemp)
 ```
 
-What a live run on 2026-11-21 returned, about 45 s after creating both monitors:
+Alice gets a CSRF cookie and signs up:
 
-| Monitor | Status | Checks | Uptime 24 h | Avg response | Incident |
-|---|---|---|---|---|---|
-| `https://example.com/` | UP | 2 × HTTP 200 | 100.0 % | 164 ms | none |
-| `https://httpbin.org/status/500` | DOWN (on the 2nd failure) | 2 × HTTP 500 | 0.0 % | — | 1 ongoing, cause `HTTP 500` |
+```bash
+curl -s -c $ALICE -b $ALICE localhost:8080/api/auth/csrf
+curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","password":"alice-long-password"}' localhost:8080/api/auth/signup
+```
+
+Read the verification email from the API log, take the token from its link, and verify:
+
+```bash
+docker compose logs api --no-log-prefix --since 10m | grep '"EMAIL to=alice@example.com' | tail -1 | jq -r .message
+TOKEN=$(docker compose logs api --no-log-prefix --since 10m | grep '"EMAIL to=alice@example.com' | tail -1 | jq -r .message | grep -o 'token=[A-Za-z0-9_-]*' | cut -d= -f2)
+curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$TOKEN\"}" localhost:8080/api/auth/verify
+```
+
+Log in, create a monitor and look at it (wait a few seconds for the first check):
+
+```bash
+curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","password":"alice-long-password"}' localhost:8080/api/auth/login
+MONITOR_ID=$(curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
+  -d '{"name":"Example","url":"https://example.com","intervalSeconds":60}' localhost:8080/api/monitors | jq -r .id)
+curl -s -b $ALICE localhost:8080/api/monitors/$MONITOR_ID | jq '{name, status, lastCheckedAt, uptime}'
+curl -s -b $ALICE "localhost:8080/api/monitors/$MONITOR_ID/checks?size=5" | jq -c '.content[]'
+```
+
+Log out; the session no longer works:
+
+```bash
+curl -s -c $ALICE -b $ALICE -X POST -H "X-XSRF-TOKEN: $(xsrf $ALICE)" localhost:8080/api/auth/logout
+curl -s -b $ALICE localhost:8080/api/auth/me
+```
+
+Bob signs up, verifies and logs in the same way, then tries Alice's monitor:
+
+```bash
+curl -s -c $BOB -b $BOB localhost:8080/api/auth/csrf
+curl -s -c $BOB -b $BOB -H "X-XSRF-TOKEN: $(xsrf $BOB)" -H 'Content-Type: application/json' \
+  -d '{"email":"bob@example.com","password":"bob-long-password"}' localhost:8080/api/auth/signup
+BTOKEN=$(docker compose logs api --no-log-prefix --since 10m | grep '"EMAIL to=bob@example.com' | tail -1 | jq -r .message | grep -o 'token=[A-Za-z0-9_-]*' | cut -d= -f2)
+curl -s -c $BOB -b $BOB -H "X-XSRF-TOKEN: $(xsrf $BOB)" -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$BTOKEN\"}" localhost:8080/api/auth/verify
+curl -s -c $BOB -b $BOB -H "X-XSRF-TOKEN: $(xsrf $BOB)" -H 'Content-Type: application/json' \
+  -d '{"email":"bob@example.com","password":"bob-long-password"}' localhost:8080/api/auth/login
+curl -s -b $BOB localhost:8080/api/monitors
+curl -s -b $BOB -o /dev/null -w '%{http_code}\n' localhost:8080/api/monitors/$MONITOR_ID
+```
+
+Internal addresses are refused with 400 (as Alice, logged in again):
+
+```bash
+curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","password":"alice-long-password"}' localhost:8080/api/auth/login
+curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
+  -d '{"name":"metadata","url":"http://169.254.169.254/latest/meta-data/","intervalSeconds":60}' localhost:8080/api/monitors | jq -r .detail
+```
+
+What a live run on 2026-11-23 returned:
+
+| Step | Result |
+|---|---|
+| Sign up Alice | `201`, `emailVerified: false`; verification email with a 24 h link in the API log |
+| Create a monitor before verifying | `403 Email not verified` |
+| Verify, then create `https://example.com` | `200`, then `201` |
+| First check | `UP`, HTTP 200 in 278 ms; uptime 24 h `100.0` |
+| Log out, then `GET /api/auth/me` | `204`, then `401 Please log in` |
+| Bob: `GET /api/monitors` | `200 []` |
+| Bob: Alice's monitor, its checks and incidents; `DELETE` it | `404` for all four; Alice's monitor unchanged |
+| `GET /api/monitors` with only the scheduler `X-API-Key` | `401` |
 
 ```text
-$ … url=http://169.254.169.254/latest/meta-data/
 This URL can't be monitored: 169.254.169.254 is a private or reserved address
-$ … url=http://localhost:8080/jobs/stats
 This URL can't be monitored: localhost resolves to a private or reserved address (127.0.0.1)
 ```
 

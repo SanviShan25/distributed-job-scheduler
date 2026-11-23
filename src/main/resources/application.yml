@@ -19,6 +19,13 @@ spring:
   jpa:
     hibernate.ddl-auto: validate
     open-in-view: false
+  session:
+    # Indexed: sessions can be found by user, so a password reset can log out all of a user's sessions.
+    data:
+      redis:
+        repository-type: indexed
+        namespace: pulsecheck:session
+    timeout: 1d
   data.redis:
     host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}
@@ -49,8 +56,27 @@ security:
     refill-per-second: 50
 
 pulsecheck:
-  # Created at startup under the "dev" profile; the API acts as this user until login exists.
-  dev-user-email: dev@pulsecheck.local
+  auth:
+    rate-limits-enabled: true
+    login-per-ip-per-minute: 10
+    login-per-email-per-minute: 5
+    signup-per-ip-per-hour: 5
+    max-failed-logins: 10
+    lock-duration: 15m
+    verification-token-ttl: 24h
+    reset-token-ttl: 1h
+    resend-verification-per-user-per-hour: 3
+    forgot-password-per-email-per-hour: 3
+    forgot-password-per-ip-per-hour: 10
+  email:
+    # Base URL of the web app; emailed links point at its /verify-email and /reset-password pages.
+    app-base-url: ${PULSECHECK_APP_BASE_URL:http://localhost:8080}
+  session:
+    cookie-name: PULSECHECK_SESSION
+    # AUTO = Secure everywhere except localhost (plain-HTTP development). ALWAYS / NEVER override.
+    secure-cookie: AUTO
+    idle-timeout: 1d
+    remember-me-timeout: 30d
   max-monitors-per-user: 10
   retention-days: 90
   retention-batch-size: 5000

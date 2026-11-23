@@ -14,7 +14,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static com.sanvi.jobscheduler.support.CsrfTestSupport.validCsrf;
+import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -24,6 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sanvi.jobscheduler.pulsecheck.api.MonitorSchedules;
+import com.sanvi.jobscheduler.pulsecheck.auth.SessionUser;
 import com.sanvi.jobscheduler.pulsecheck.check.HttpChecker;
 import com.sanvi.jobscheduler.queue.JobQueue;
 import com.sanvi.jobscheduler.schedule.ScheduleRunner;
@@ -34,13 +42,15 @@ import tools.jackson.databind.ObjectMapper;
 @Import(PulseCheckApiTestConfiguration.class)
 class MonitorApiIntegrationTest extends AbstractIntegrationTest {
 
-    @Autowired MockMvc mvc;
+    @Autowired WebApplicationContext context;
+    /** Logged in as the dev user, with a valid CSRF token on every request. */
+    MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
     @Autowired HttpCheckJobHandler handler;
     @Autowired ScheduleRunner scheduleRunner;
     @Autowired PulseCheckApiTestConfiguration.ScriptedSiteChecker sites;
-    @Autowired PulseCheckProperties props;
+    private static final String OWNER_EMAIL = "owner@example.com";
     @Autowired CheckResultRetention retention;
 
     private UUID devUser;
@@ -51,7 +61,12 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
         jdbc.update("delete from job_schedules");
         sites.reset();
         devUser = UUID.randomUUID();
-        jdbc.update("insert into users (id, email) values (?, ?)", devUser, props.devUserEmail());
+        jdbc.update("insert into users (id, email, email_verified) values (?, ?, true)", devUser, OWNER_EMAIL);
+        var login = UsernamePasswordAuthenticationToken.authenticated(new SessionUser(devUser, OWNER_EMAIL),
+            null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
+        mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity())
+            .defaultRequest(get("/").with(authentication(login)).with(validCsrf()))
+            .build();
     }
 
     // ------------------------------------------------------------------ helpers
@@ -373,11 +388,9 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void withoutTheDevUserTheApiExplainsWhatIsMissing() throws Exception {
+    void aSessionWhoseAccountWasDeletedIsTreatedAsLoggedOut() throws Exception {
         jdbc.update("delete from users");
-        mvc.perform(get("/api/monitors"))
-            .andExpect(status().isServiceUnavailable())
-            .andExpect(jsonPath("$.detail", containsString("dev")));
+        mvc.perform(get("/api/monitors")).andExpect(status().isUnauthorized());
     }
 
     @Test

@@ -9,7 +9,10 @@ import java.util.UUID;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.stereotype.Service;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -22,6 +25,7 @@ import com.sanvi.jobscheduler.pulsecheck.HttpCheckJobHandler;
 import com.sanvi.jobscheduler.pulsecheck.PulseCheckProperties;
 import com.sanvi.jobscheduler.pulsecheck.check.UnsafeUrlException;
 import com.sanvi.jobscheduler.pulsecheck.check.UrlSafetyValidator;
+import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
 import com.sanvi.jobscheduler.pulsecheck.domain.CheckResult;
 import com.sanvi.jobscheduler.pulsecheck.domain.Incident;
 import com.sanvi.jobscheduler.pulsecheck.domain.Monitor;
@@ -66,7 +70,14 @@ public class MonitorService {
 
     @Transactional
     public Monitor create(UUID userId, MonitorChanges request) {
-        users.findByIdForUpdate(userId).orElseThrow(() -> ApiProblems.notFound("User not found"));
+        AppUser owner = users.findByIdForUpdate(userId).orElseThrow(() -> ApiProblems.notFound("User not found"));
+        if (!owner.isEmailVerified()) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN,
+                "Please verify your email address before creating monitors. "
+                    + "Check your inbox for the link, or request a new one (POST /api/auth/resend-verification).");
+            problem.setTitle("Email not verified");
+            throw new ErrorResponseException(HttpStatus.FORBIDDEN, problem, null);
+        }
         if (monitors.countByUserId(userId) >= props.maxMonitorsPerUser()) {
             throw ApiProblems.conflict("You can have at most " + props.maxMonitorsPerUser() + " monitors");
         }
