@@ -61,7 +61,7 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
         jdbc.update("delete from job_schedules");
         sites.reset();
         devUser = UUID.randomUUID();
-        jdbc.update("insert into users (id, email) values (?, ?)", devUser, props.devUserEmail());
+        jdbc.update("insert into users (id, email, email_verified) values (?, ?, true)", devUser, props.devUserEmail());
         var login = UsernamePasswordAuthenticationToken.authenticated(new SessionUser(devUser, props.devUserEmail()),
             null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
         mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity())

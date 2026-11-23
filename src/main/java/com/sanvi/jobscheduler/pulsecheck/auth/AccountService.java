@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailProperties;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailSender;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -32,15 +34,22 @@ public class AccountService {
     private final PasswordEncoder passwordEncoder;
     private final AppUserRepository users;
     private final AuthProtectionProperties protection;
+    private final AuthTokenService tokens;
+    private final EmailSender emails;
+    private final EmailProperties emailProps;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
     public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
-            AuthProtectionProperties protection) {
+            AuthProtectionProperties protection, AuthTokenService tokens, EmailSender emails,
+            EmailProperties emailProps) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
         this.protection = protection;
+        this.tokens = tokens;
+        this.emails = emails;
+        this.emailProps = emailProps;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -60,16 +69,33 @@ public class AccountService {
         validatePassword(password);
 
         String hash = passwordEncoder.encode(password);
+        UUID id = UUID.randomUUID();
         int inserted = jdbc.update(
             "insert into users (id, email, password_hash, created_at, email_verified, failed_login_count) "
                 + "values (?, ?, ?, ?, false, 0) on conflict ((lower(email))) do nothing",
-            UUID.randomUUID(), email, hash, Timestamp.from(Instant.now()));
+            id, email, hash, Timestamp.from(Instant.now()));
         if (inserted == 1) {
             log.info("New PulseCheck account created");
+            sendVerificationEmail(id, email);
         } else {
+            // Same API answer as a new account; only the real owner of the address learns about the attempt.
             log.info("Sign-up for an already registered email; no account created");
+            emails.send(new EmailSender.Email(email, "You already have a PulseCheck account",
+                "Someone (hopefully you) tried to sign up to PulseCheck with this email address, which already "
+                    + "has an account.\n\nForgot your password? Reset it here: "
+                    + emailProps.appBaseUrl() + "/forgot-password\n\nIf this wasn't you, you can ignore this email."));
         }
         return new SignupResult(email, false);
+    }
+
+    /** Issues a fresh 24 h verification link (older links stop working) and emails it. */
+    public void sendVerificationEmail(UUID userId, String email) {
+        String token = tokens.issue(userId, AuthTokenService.Purpose.EMAIL_VERIFICATION,
+            protection.verificationTokenTtl());
+        emails.send(new EmailSender.Email(email, "Verify your PulseCheck email address",
+            "Welcome to PulseCheck! Confirm your email address to start monitoring your websites:\n\n"
+                + emailProps.link("/verify-email", token)
+                + "\n\nThis link works once and expires in " + protection.verificationTokenTtl().toHours() + " hours."));
     }
 
     /**

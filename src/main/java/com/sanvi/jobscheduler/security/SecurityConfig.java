@@ -30,8 +30,8 @@ import jakarta.servlet.http.HttpServletResponse;
  * single-page-app pattern: a readable {@code XSRF-TOKEN} cookie whose value must be echoed in the
  * {@code X-XSRF-TOKEN} header on every state-changing request.
  * <ul>
- *   <li>{@code /api/auth/me}, {@code /api/auth/logout}: logged-in user</li>
- *   <li>other {@code /api/auth/**} (signup, login, csrf): public</li>
+ *   <li>public: signup, login, csrf, verify, forgot-password, reset-password</li>
+ *   <li>logged-in user: me, logout, resend-verification, change-password, account (DELETE)</li>
  *   <li>{@code /api/monitors/**} and anything else under {@code /api}: logged-in user</li>
  * </ul>
  *
@@ -83,8 +83,8 @@ public class SecurityConfig {
             .requestCache(cache -> cache.disable())
             .exceptionHandling(ex -> ex.authenticationEntryPoint(notLoggedIn).accessDeniedHandler(denied))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/me", "/api/auth/logout").authenticated()
-                .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/verify",
+                    "/api/auth/forgot-password", "/api/auth/reset-password").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/auth/csrf").permitAll()
                 .anyRequest().authenticated());
         return http.build();

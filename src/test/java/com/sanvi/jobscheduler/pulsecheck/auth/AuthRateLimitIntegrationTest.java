@@ -99,6 +99,46 @@ class AuthRateLimitIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void threeVerificationEmailsPerHourPerUser() throws Exception {
+        java.util.UUID id = java.util.UUID.randomUUID();
+        jdbc.update("insert into users (id, email) values (?, 'unverified@example.com')", id);
+        var auth = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
+            new SessionUser(id, "unverified@example.com"), null,
+            java.util.List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_USER")));
+        for (int i = 0; i < 3; i++) {
+            mvc.perform(post("/api/auth/resend-verification").with(validCsrf())
+                    .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication(auth)))
+                .andExpect(status().isOk());
+        }
+        mvc.perform(post("/api/auth/resend-verification").with(validCsrf())
+                .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication(auth)))
+            .andExpect(status().isTooManyRequests())
+            .andExpect(header().exists(HttpHeaders.RETRY_AFTER));
+    }
+
+    @Test
+    void forgotPasswordIsLimitedPerEmailAndPerIp() throws Exception {
+        for (int i = 0; i < 3; i++) {
+            forgot("192.0.2.40", "target@example.com").andExpect(status().isAccepted());
+        }
+        forgot("192.0.2.41", "target@example.com").andExpect(status().isTooManyRequests());
+
+        for (int i = 0; i < 10; i++) {
+            forgot("192.0.2.50", "someone" + i + "@example.com").andExpect(status().isAccepted());
+        }
+        forgot("192.0.2.50", "someone-else@example.com")
+            .andExpect(status().isTooManyRequests())
+            .andExpect(header().exists(HttpHeaders.RETRY_AFTER));
+    }
+
+    private ResultActions forgot(String ip, String email) throws Exception {
+        return mvc.perform(post("/api/auth/forgot-password").with(validCsrf()).with(request -> {
+            request.setRemoteAddr(ip);
+            return request;
+        }).contentType(MediaType.APPLICATION_JSON).content("{\"email\":\"" + email + "\"}"));
+    }
+
+    @Test
     void theApiKeyRateLimitForJobsIsUnaffected() throws Exception {
         for (int i = 0; i < 11; i++) {
             login("203.0.113.9", "x" + i + "@example.com");

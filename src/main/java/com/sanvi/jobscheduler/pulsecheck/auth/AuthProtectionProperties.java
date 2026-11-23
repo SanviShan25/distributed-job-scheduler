@@ -14,6 +14,11 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param signupPerIpPerHour      sign-ups per client IP per hour
  * @param maxFailedLogins         consecutive failed logins that lock the account
  * @param lockDuration            how long a locked account stays locked
+ * @param verificationTokenTtl    lifetime of an email verification link
+ * @param resetTokenTtl           lifetime of a password reset link
+ * @param resendVerificationPerUserPerHour verification emails a user can request per hour
+ * @param forgotPasswordPerEmailPerHour    reset emails per address per hour
+ * @param forgotPasswordPerIpPerHour       reset requests per client IP per hour
  */
 @ConfigurationProperties(prefix = "pulsecheck.auth")
 public record AuthProtectionProperties(
@@ -22,5 +27,10 @@ public record AuthProtectionProperties(
     @DefaultValue("5") int loginPerEmailPerMinute,
     @DefaultValue("5") int signupPerIpPerHour,
     @DefaultValue("10") int maxFailedLogins,
-    @DefaultValue("15m") Duration lockDuration) {
+    @DefaultValue("15m") Duration lockDuration,
+    @DefaultValue("24h") Duration verificationTokenTtl,
+    @DefaultValue("1h") Duration resetTokenTtl,
+    @DefaultValue("3") int resendVerificationPerUserPerHour,
+    @DefaultValue("3") int forgotPasswordPerEmailPerHour,
+    @DefaultValue("10") int forgotPasswordPerIpPerHour) {
 }

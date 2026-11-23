@@ -211,3 +211,42 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   Password reset (next step) works during a lock.
 - **Tests:** the shared test profile turns the rate limits off (many tests sign up repeatedly from
   127.0.0.1); `AuthRateLimitIntegrationTest` turns them on in its own context.
+
+### Email verification, password reset and account deletion (V7)
+
+- **`EmailSender` with a `LoggingEmailSender` for now.** It logs each email including its link, so
+  the flows can be exercised end to end without a provider. Those log lines contain live tokens, so it
+  must be replaced (Day 4) before real users exist.
+- **Tokens:** 256 random bits, URL-safe base64, sent only in the email. The database keeps only the
+  SHA-256 (V7 `auth_tokens`), so a database leak does not expose usable links. A plain hash is enough
+  because, unlike a password, the token is long and random. Using a token is one conditional
+  `UPDATE … SET used_at = now() WHERE … used_at IS NULL AND expires_at > now() RETURNING user_id`, so
+  it is single-use even under parallel requests, and expiry uses the database clock. Issuing a new
+  token of the same kind invalidates the user's older unused ones (only the latest email's link works).
+- **Verification:** a 24 h link is sent on sign-up. `POST /api/auth/verify` is public (the link may be
+  opened on a device where the user is not logged in). Resending needs a login and is limited to
+  3/hour per user. Unverified users can log in and look around, but creating a monitor returns
+  `403 Email not verified` with instructions; it is the action that makes the server send requests on
+  the user's behalf.
+- **Duplicate sign-up sends the owner an email** ("you already have an account", with a reset link) and
+  creates no token. The API response stays identical, so only the real owner of the address learns
+  about the attempt.
+- **Forgot password:** always `202` with the same message, also for unknown or malformed addresses.
+  Limited to 3/hour per email (so nobody can flood an inbox) and 10/hour per IP. The reset link lasts
+  1 hour.
+- **Reset password:** the new password is validated *before* the token is used, so a too-short
+  password does not burn the link. A successful reset sets the new hash, clears the failed-login counter
+  and any lock (so a locked-out owner can always recover), marks the email verified (they just proved
+  they read it), invalidates other reset links, and **deletes every session of the user** via Spring
+  Session's per-user index.
+- **Change password** needs the current password. It ends all of the user's *other* sessions and
+  rotates the current session's id. Ordering matters: the other sessions are deleted while the current
+  one still has its stored id, because Spring Session only renames a session in Redis when the response
+  is committed.
+- **Delete account** needs the password. In one transaction it deletes the user's monitor schedules
+  (`job_schedules` rows; they are not owned via a foreign key) and then the user, which cascades to
+  monitors, check results, incidents and tokens. Then it ends every session. Already-queued checks of the
+  deleted monitors run as no-ops.
+- **A wrong current password returns `403 Your password is incorrect`**, not the login-style 401: the
+  caller is already authenticated, so there is no account enumeration to protect against, and a 401
+  would make a browser app think the session had ended.

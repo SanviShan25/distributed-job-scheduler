@@ -42,6 +42,19 @@ public class AuthRateLimiter {
         consume("signup:ip:" + clientIp, props.signupPerIpPerHour(), 3600, "Too many sign-ups");
     }
 
+    public void checkResendVerification(java.util.UUID userId) {
+        consume("resend:user:" + userId, props.resendVerificationPerUserPerHour(), 3600,
+            "Too many verification emails requested");
+    }
+
+    public void checkForgotPassword(String clientIp, String normalizedEmail) {
+        consume("forgot:ip:" + clientIp, props.forgotPasswordPerIpPerHour(), 3600, "Too many password reset requests");
+        if (normalizedEmail != null && !normalizedEmail.isBlank()) {
+            consume("forgot:email:" + fingerprint(normalizedEmail), props.forgotPasswordPerEmailPerHour(), 3600,
+                "Too many password reset requests");
+        }
+    }
+
     private void consume(String bucket, int limit, int perSeconds, String message) {
         if (!props.rateLimitsEnabled()) {
             return;

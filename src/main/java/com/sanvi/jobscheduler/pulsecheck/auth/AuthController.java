@@ -17,6 +17,7 @@ import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
 import org.springframework.session.security.web.authentication.SpringSessionRememberMeServices;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -45,6 +46,7 @@ import lombok.RequiredArgsConstructor;
 public class AuthController {
     private final AccountService accounts;
     private final AuthRateLimiter rateLimiter;
+    private final AccountManagementService management;
     private final AppUserRepository users;
     private final SecurityContextRepository securityContextRepository;
     private final CsrfTokenRepository csrfTokenRepository;
@@ -62,6 +64,18 @@ public class AuthController {
             return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt());
         }
     }
+
+    public record TokenRequest(@NotNull String token) {}
+
+    public record EmailRequest(@NotNull String email) {}
+
+    public record ResetPasswordRequest(@NotNull String token, @NotNull String newPassword) {}
+
+    public record ChangePasswordRequest(@NotNull String currentPassword, @NotNull String newPassword) {}
+
+    public record PasswordRequest(@NotNull String password) {}
+
+    public record MessageResponse(String message) {}
 
     /** Where to put the CSRF token on state-changing requests. */
     public record CsrfResponse(String headerName, String cookieName, String token) {}
@@ -129,6 +143,68 @@ public class AuthController {
             throw AccountService.invalidCredentials();
         }
         return MeResponse.of(user);
+    }
+
+    /** Confirms the email address with the token from the verification link. Works without being logged in. */
+    @PostMapping("/verify")
+    public MessageResponse verify(@RequestBody @Valid TokenRequest request) {
+        management.verifyEmail(request.token());
+        return new MessageResponse("Your email address is verified.");
+    }
+
+    /** Sends a new verification link to the logged-in user (earlier links stop working). Rate-limited. */
+    @PostMapping("/resend-verification")
+    public MessageResponse resendVerification(@AuthenticationPrincipal SessionUser principal) {
+        rateLimiter.checkResendVerification(principal.id());
+        return new MessageResponse(management.resendVerification(principal.id())
+            ? "We've sent you a new verification link."
+            : "Your email address is already verified.");
+    }
+
+    /** Always the same answer, whether or not the address has an account. Rate-limited. */
+    @PostMapping("/forgot-password")
+    public ResponseEntity<MessageResponse> forgotPassword(@RequestBody @Valid EmailRequest request,
+            HttpServletRequest httpRequest) {
+        rateLimiter.checkForgotPassword(clientIp(httpRequest), EmailAddresses.normalize(request.email()));
+        management.forgotPassword(request.email());
+        return ResponseEntity.accepted().body(new MessageResponse(
+            "If an account exists for that address, we've emailed a link to reset the password."));
+    }
+
+    /** Sets a new password with the token from the reset link, and logs out all of that user's sessions. */
+    @PostMapping("/reset-password")
+    public MessageResponse resetPassword(@RequestBody @Valid ResetPasswordRequest request) {
+        management.resetPassword(request.token(), request.newPassword());
+        return new MessageResponse("Your password has been changed. Please log in with your new password.");
+    }
+
+    /** Needs the current password. Other sessions are logged out; this one stays (with a new id). */
+    @PostMapping("/change-password")
+    public MessageResponse changePassword(@AuthenticationPrincipal SessionUser principal,
+            @RequestBody @Valid ChangePasswordRequest request, HttpServletRequest httpRequest) {
+        HttpSession session = httpRequest.getSession(false);
+        // End the other sessions while this one still has its stored id (Spring Session only renames it in
+        // Redis when the response is committed), then rotate this session's id.
+        management.changePassword(principal.id(), request.currentPassword(), request.newPassword(),
+            session == null ? null : session.getId());
+        if (session != null) {
+            httpRequest.changeSessionId();
+        }
+        return new MessageResponse("Your password has been changed.");
+    }
+
+    /** Deletes the account and all its monitors and data. Needs the password. */
+    @DeleteMapping("/account")
+    public ResponseEntity<Void> deleteAccount(@AuthenticationPrincipal SessionUser principal,
+            @RequestBody @Valid PasswordRequest request, HttpServletRequest httpRequest, HttpServletResponse response) {
+        management.deleteAccount(principal.id(), request.password());
+        HttpSession session = httpRequest.getSession(false);
+        if (session != null) {
+            session.invalidate();
+        }
+        SecurityContextHolder.clearContext();
+        rotateCsrfToken(httpRequest, response);
+        return ResponseEntity.noContent().build();
     }
 
     /**
