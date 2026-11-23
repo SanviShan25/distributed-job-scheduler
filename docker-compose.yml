@@ -42,6 +42,11 @@ services:
       SECURITY_RATE_LIMIT_CAPACITY: "${RATE_LIMIT_CAPACITY:-200}"
       SECURITY_RATE_LIMIT_REFILL_PER_SECOND: "${RATE_LIMIT_REFILL_PER_SECOND:-50}"
       MANAGEMENT_PORT: "9091"
+      # PulseCheck email (api and workers both send). See .env.example.
+      PULSECHECK_APP_BASE_URL: "${PULSECHECK_APP_BASE_URL:-http://localhost:8080}"
+      PULSECHECK_EMAIL_PROVIDER: "${PULSECHECK_EMAIL_PROVIDER:-logging}"
+      RESEND_API_KEY: "${RESEND_API_KEY:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-PulseCheck <onboarding@resend.dev>}"
     ports: ["8080:8080"]
     expose: ["9091"]   # actuator: internal network only
     depends_on:
@@ -64,6 +69,11 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-4}"
       MANAGEMENT_PORT: "9091"
+      # PulseCheck email (api and workers both send). See .env.example.
+      PULSECHECK_APP_BASE_URL: "${PULSECHECK_APP_BASE_URL:-http://localhost:8080}"
+      PULSECHECK_EMAIL_PROVIDER: "${PULSECHECK_EMAIL_PROVIDER:-logging}"
+      RESEND_API_KEY: "${RESEND_API_KEY:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-PulseCheck <onboarding@resend.dev>}"
     entrypoint:
       - sh
       - -c

@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailProperties;
+import com.sanvi.jobscheduler.pulsecheck.AppProperties;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailSendException;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailSender;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailTemplates;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -36,20 +38,20 @@ public class AccountService {
     private final AuthProtectionProperties protection;
     private final AuthTokenService tokens;
     private final EmailSender emails;
-    private final EmailProperties emailProps;
+    private final AppProperties app;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
     public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
             AuthProtectionProperties protection, AuthTokenService tokens, EmailSender emails,
-            EmailProperties emailProps) {
+            AppProperties app) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
         this.protection = protection;
         this.tokens = tokens;
         this.emails = emails;
-        this.emailProps = emailProps;
+        this.app = app;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -80,10 +82,7 @@ public class AccountService {
         } else {
             // Same API answer as a new account; only the real owner of the address learns about the attempt.
             log.info("Sign-up for an already registered email; no account created");
-            emails.send(new EmailSender.Email(email, "You already have a PulseCheck account",
-                "Someone (hopefully you) tried to sign up to PulseCheck with this email address, which already "
-                    + "has an account.\n\nForgot your password? Reset it here: "
-                    + emailProps.appBaseUrl() + "/forgot-password\n\nIf this wasn't you, you can ignore this email."));
+            sendQuietly(EmailTemplates.alreadyRegistered(email, app.url("/forgot-password")));
         }
         return new SignupResult(email, false);
     }
@@ -92,10 +91,20 @@ public class AccountService {
     public void sendVerificationEmail(UUID userId, String email) {
         String token = tokens.issue(userId, AuthTokenService.Purpose.EMAIL_VERIFICATION,
             protection.verificationTokenTtl());
-        emails.send(new EmailSender.Email(email, "Verify your PulseCheck email address",
-            "Welcome to PulseCheck! Confirm your email address to start monitoring your websites:\n\n"
-                + emailProps.link("/verify-email", token)
-                + "\n\nThis link works once and expires in " + protection.verificationTokenTtl().toHours() + " hours."));
+        sendQuietly(EmailTemplates.verification(email, app.link("/verify-email", token),
+            protection.verificationTokenTtl().toHours()));
+    }
+
+    /**
+     * Interim: emails are sent inside the request. A provider failure is logged rather than failing the
+     * request (the user can ask for the email again). Sending moves to the job scheduler next.
+     */
+    void sendQuietly(EmailSender.Email email) {
+        try {
+            emails.send(email);
+        } catch (EmailSendException e) {
+            log.error("Could not send \"{}\": {}", email.subject(), e.getMessage());
+        }
     }
 
     /**

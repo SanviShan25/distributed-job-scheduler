@@ -16,8 +16,8 @@ import org.springframework.web.ErrorResponseException;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailProperties;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailSender;
+import com.sanvi.jobscheduler.pulsecheck.AppProperties;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailTemplates;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -39,8 +39,7 @@ public class AccountManagementService {
     private final AuthTokenService tokens;
     private final PasswordEncoder passwordEncoder;
     private final JdbcTemplate jdbc;
-    private final EmailSender emails;
-    private final EmailProperties emailProps;
+    private final AppProperties app;
     private final AuthProtectionProperties protection;
     private final FindByIndexNameSessionRepository<? extends Session> sessions;
 
@@ -77,11 +76,8 @@ public class AccountManagementService {
         }
         users.findByEmail(email).ifPresent(user -> {
             String token = tokens.issue(user.getId(), AuthTokenService.Purpose.PASSWORD_RESET, protection.resetTokenTtl());
-            emails.send(new EmailSender.Email(user.getEmail(), "Reset your PulseCheck password",
-                "Someone asked to reset the password for this PulseCheck account. If it was you, choose a new "
-                    + "password here:\n\n" + emailProps.link("/reset-password", token)
-                    + "\n\nThis link works once and expires in " + protection.resetTokenTtl().toMinutes()
-                    + " minutes. If you didn't ask for this, ignore this email; your password stays the same."));
+            accounts.sendQuietly(EmailTemplates.passwordReset(user.getEmail(), app.link("/reset-password", token),
+                protection.resetTokenTtl().toMinutes()));
         });
     }
 

@@ -71,7 +71,7 @@ class AccountEmailFlowsIntegrationTest extends AbstractIntegrationTest {
         var sent = emails.to(EMAIL);
         assertThat(sent).hasSize(1);
         assertThat(sent.getFirst().subject()).startsWith(VERIFY);
-        assertThat(sent.getFirst().body()).contains("http://localhost:8080/verify-email?token=").contains("24 hours");
+        assertThat(sent.getFirst().text()).contains("http://localhost:8080/verify-email?token=").contains("24 hours");
         String token = emails.latestToken(EMAIL, VERIFY);
         Map<String, Object> row = jdbc.queryForMap("select * from auth_tokens");
         assertThat(row.get("purpose")).isEqualTo("EMAIL_VERIFICATION");
@@ -181,7 +181,7 @@ class AccountEmailFlowsIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(known).isEqualTo(unknown).isEqualTo(invalid);
         assertThat(emails.all()).hasSize(1);
-        assertThat(emails.to(EMAIL).getFirst().body()).contains("/reset-password?token=").contains("60 minutes");
+        assertThat(emails.to(EMAIL).getFirst().text()).contains("/reset-password?token=").contains("60 minutes");
         Boolean aboutOneHour = jdbc.queryForObject("select expires_at between now() + interval '59 minutes' "
             + "and now() + interval '60 minutes' from auth_tokens where purpose = 'PASSWORD_RESET'", Boolean.class);
         assertThat(aboutOneHour).isTrue();

@@ -262,3 +262,34 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   their monitors (cascade) and those monitors' schedules. Nobody could log in as them, but a password
   reset could have claimed one.
 - **docker-compose runs the API with only the `api` profile** again.
+
+### Sending email through Resend
+
+- **Provider switch:** `pulsecheck.email.provider` is `logging` (default: local development and tests)
+  or `resend`. One factory method (`EmailSenderConfig`) creates the sender and refuses to start when:
+  - the provider is `logging` and `pulsecheck.app.base-url` is not a localhost URL. The logging sender
+    writes working verification and reset links to the log, so it must never serve real users. The host
+    is parsed, not string-matched, so `https://localhost.evil.example.com` does not pass;
+  - the provider is `resend` without `RESEND_API_KEY` or without `EMAIL_FROM`.
+- **`pulsecheck.app.base-url` replaces `pulsecheck.email.app-base-url`** (same `PULSECHECK_APP_BASE_URL`
+  variable). It is where the web app lives, used for every link, not only email links.
+- **Error classification** (`EmailSendException.isRetryable()`): 429, 5xx, 409 (Resend's "concurrent
+  request with the same idempotency key"), timeouts and network errors are retryable; any other 4xx
+  (validation error, unverified sender domain, bad API key) is not, because the same request would fail
+  the same way. Non-retryable failures are logged at ERROR because they usually mean a configuration
+  problem. The API key never appears in errors or logs, and email content is never logged by the Resend
+  sender (it may contain one-time links).
+- **No HTTP-level retries in the sender** (`retryOnConnectionFailure(false)`): retrying is the job
+  scheduler's job, with backoff (next step). The email's idempotency key is passed as Resend's
+  `Idempotency-Key` header, so a retry after an ambiguous failure (e.g. a timeout after Resend accepted
+  the email) does not deliver it twice.
+- **Templates:** every email has a plain-text and an HTML part built from the same content (heading,
+  short paragraphs, one button, the same link as plain text under it). The HTML is a single centred
+  table with inline CSS only (Gmail drops `<style>` blocks in many contexts), system fonts, a light
+  background and no images. All dynamic text is HTML-escaped.
+- **Interim:** emails are still sent inside the HTTP request in this step; a provider failure is
+  logged instead of failing sign-up or forgot-password. The next step moves sending to the job
+  scheduler.
+- **Configuration:** `PULSECHECK_EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` and
+  `PULSECHECK_APP_BASE_URL` are passed to both the API and the workers (workers send emails from the
+  next step on); placeholders are in `.env.example`.

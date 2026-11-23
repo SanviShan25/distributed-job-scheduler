@@ -40,9 +40,9 @@ public class RecordingEmailConfiguration {
         public synchronized String latestToken(String address, String subjectPrefix) {
             Email email = to(address).stream().filter(e -> e.subject().startsWith(subjectPrefix))
                 .reduce((a, b) -> b).orElseThrow(() -> new AssertionError("no '" + subjectPrefix + "' email to " + address));
-            Matcher matcher = TOKEN.matcher(email.body());
+            Matcher matcher = TOKEN.matcher(email.text());
             if (!matcher.find()) {
-                throw new AssertionError("no token link in: " + email.body());
+                throw new AssertionError("no token link in: " + email.text());
             }
             return matcher.group(1);
         }
