@@ -27,7 +27,7 @@ public class DevUserSeeder implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         int inserted = jdbc.update(
-            "insert into users (id, email, created_at) values (?, ?, now()) on conflict (email) do nothing",
+            "insert into users (id, email, created_at) values (?, lower(?), now()) on conflict ((lower(email))) do nothing",
             UUID.randomUUID(), props.devUserEmail());
         if (inserted == 1) {
             log.info("Seeded PulseCheck dev user {}", props.devUserEmail());

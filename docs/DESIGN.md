@@ -112,3 +112,21 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   `CurrentUser` is the single place to change when real login arrives.
 - **Retention:** check results older than 90 days are deleted daily at 03:30 UTC in batches of 5,000,
   under a Redis lock so only one API instance does it.
+
+### Accounts: sign-up (V6)
+
+- **Argon2id instead of BCrypt.** BCrypt only uses the first 72 bytes of a password (Spring Security
+  rejects longer ones), but passwords may be up to 128 characters. Argon2id
+  (`Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8()`, BouncyCastle) has no such limit and is
+  memory-hard. It is wrapped in a `DelegatingPasswordEncoder`, so hashes are stored as `{argon2}…` and
+  the algorithm or its cost can be raised later without breaking existing accounts.
+- **Emails are case-insensitive.** They are stored trimmed and lower-cased, and V6 replaces the plain
+  unique constraint with a unique index on `lower(email)`, so even a row written outside the
+  application cannot duplicate an address in another case.
+- **Sign-up does not reveal whether an email is registered.** An existing email gets byte-for-byte the
+  same `201` response as a new one, and nothing is changed (the existing password is kept). The insert
+  is `ON CONFLICT ((lower(email))) DO NOTHING`, which also makes concurrent sign-ups race-free. The
+  password is hashed before the insert on both paths, so response times are similar too.
+- **The sign-up response has no id or creation time**, only `email`, `emailVerified` (always false)
+  and a message. Returning the real id or `createdAt` for an existing account would reveal that it
+  already existed.

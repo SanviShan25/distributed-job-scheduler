@@ -58,6 +58,8 @@ public class SecurityConfig {
                 .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs", "/v3/api-docs/**").permitAll()
                 .requestMatchers("/error").permitAll()
                 .requestMatchers("/jobs", "/jobs/**", "/schedules", "/schedules/**").authenticated()
+                // PulseCheck sign-up is public.
+                .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/auth/signup").permitAll()
                 // PulseCheck: API key for now; real user login comes later.
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().denyAll());
