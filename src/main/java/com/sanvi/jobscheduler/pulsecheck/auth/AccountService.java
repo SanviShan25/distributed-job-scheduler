@@ -2,6 +2,9 @@ package com.sanvi.jobscheduler.pulsecheck.auth;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.context.annotation.Profile;
@@ -11,13 +14,12 @@ import org.springframework.web.ErrorResponseException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
-import com.sanvi.jobscheduler.pulsecheck.AppProperties;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailSendException;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailSender;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailTemplates;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailJob;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -37,21 +39,18 @@ public class AccountService {
     private final AppUserRepository users;
     private final AuthProtectionProperties protection;
     private final AuthTokenService tokens;
-    private final EmailSender emails;
-    private final AppProperties app;
+    private final EmailOutbox outbox;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
     public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
-            AuthProtectionProperties protection, AuthTokenService tokens, EmailSender emails,
-            AppProperties app) {
+            AuthProtectionProperties protection, AuthTokenService tokens, EmailOutbox outbox) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
         this.protection = protection;
         this.tokens = tokens;
-        this.emails = emails;
-        this.app = app;
+        this.outbox = outbox;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -62,7 +61,10 @@ public class AccountService {
      * Registers an account. If the email (case-insensitively) is already registered, nothing changes and
      * the caller gets exactly the same answer as for a new account, so sign-up cannot be used to find out
      * who has an account. The password is hashed in both cases so the two paths also take similar time.
+     * The account, its verification token and the email job are written in one transaction; the email is
+     * sent by a worker afterwards.
      */
+    @Transactional
     public SignupResult signup(String rawEmail, String password) {
         String email = EmailAddresses.normalize(rawEmail);
         if (!EmailAddresses.isValid(email)) {
@@ -82,29 +84,26 @@ public class AccountService {
         } else {
             // Same API answer as a new account; only the real owner of the address learns about the attempt.
             log.info("Sign-up for an already registered email; no account created");
-            sendQuietly(EmailTemplates.alreadyRegistered(email, app.url("/forgot-password")));
+            UUID existing = jdbc.queryForObject("select id from users where lower(email) = lower(?)", UUID.class, email);
+            // At most one such notice per account per hour, however often someone tries.
+            String hour = DateTimeFormatter.ofPattern("yyyyMMddHH").withZone(ZoneOffset.UTC).format(Instant.now());
+            outbox.enqueue(new EmailJob(EmailJob.Template.ALREADY_REGISTERED, email, Map.of(),
+                "email:already-registered:" + existing + ":" + hour, null));
         }
         return new SignupResult(email, false);
     }
 
-    /** Issues a fresh 24 h verification link (older links stop working) and emails it. */
-    public void sendVerificationEmail(UUID userId, String email) {
-        String token = tokens.issue(userId, AuthTokenService.Purpose.EMAIL_VERIFICATION,
-            protection.verificationTokenTtl());
-        sendQuietly(EmailTemplates.verification(email, app.link("/verify-email", token),
-            protection.verificationTokenTtl().toHours()));
-    }
-
     /**
-     * Interim: emails are sent inside the request. A provider failure is logged rather than failing the
-     * request (the user can ask for the email again). Sending moves to the job scheduler next.
+     * Issues a fresh 24 h verification link (older links stop working) and queues the email, in one
+     * transaction. Idempotency key {@code email:verify:{tokenId}}.
      */
-    void sendQuietly(EmailSender.Email email) {
-        try {
-            emails.send(email);
-        } catch (EmailSendException e) {
-            log.error("Could not send \"{}\": {}", email.subject(), e.getMessage());
-        }
+    @Transactional
+    public void sendVerificationEmail(UUID userId, String email) {
+        AuthTokenService.IssuedToken issued = tokens.issue(userId, AuthTokenService.Purpose.EMAIL_VERIFICATION,
+            protection.verificationTokenTtl());
+        outbox.enqueue(new EmailJob(EmailJob.Template.VERIFY_EMAIL, email,
+            Map.of("ttlHours", String.valueOf(protection.verificationTokenTtl().toHours())),
+            "email:verify:" + issued.id(), issued.token()));
     }
 
     /**

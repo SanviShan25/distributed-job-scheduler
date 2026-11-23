@@ -293,3 +293,37 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
 - **Configuration:** `PULSECHECK_EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` and
   `PULSECHECK_APP_BASE_URL` are passed to both the API and the workers (workers send emails from the
   next step on); placeholders are in `.env.example`.
+
+### Emails as `SEND_EMAIL` jobs (V9)
+
+- **Emails are jobs.** Sign-up, resend-verification, forgot-password and the "you already have an
+  account" notice queue a `SEND_EMAIL` job; workers send it with the scheduler's retries and backoff
+  (8 attempts, exponential backoff with jitter, capped by `worker.max-backoff-seconds`). The HTTP request
+  never waits for Resend, so a slow or failing provider cannot slow down or break sign-up.
+- **The jobs table is the outbox.** The job row is inserted in the same transaction as what the email is
+  about (the new account and its token), and pushed to Redis after commit. A rollback means no email; a
+  commit means the email will go out even if the process dies a millisecond later (the drift sweeper
+  enqueues QUEUED rows Redis missed).
+- **Idempotency:** each email job has a unique `idempotency_key`, inserted with `ON CONFLICT DO NOTHING`,
+  and the worker passes the same key to Resend as `Idempotency-Key`. Keys:
+  `email:verify:{tokenId}`, `email:reset:{tokenId}`, and `email:already-registered:{userId}:{yyyyMMddHH}`
+  (so repeated sign-up attempts for an existing account produce at most one notice per hour).
+- **The payload is a template, not a rendered email:** `{template, to, params, idempotencyKey, secret}`.
+  The worker renders it at send time with the base URL from its own configuration. A one-time token
+  travels only in `secret`, which makes redaction a single, well-defined field.
+- **Redaction is a database trigger (V9).** Whenever a `SEND_EMAIL` job becomes SUCCEEDED, DEAD or
+  CANCELLED, `secret` is removed from its payload and `"secretRedacted": true` is added. A trigger rather
+  than application code because jobs reach terminal states through several paths (worker completion,
+  reaper recovery, the bulk "attempts exhausted" update, cancellation, a manual SQL fix) and every one of
+  them must redact. Only `SEND_EMAIL` payloads are touched. While a job is still pending or retrying it
+  keeps the token, because the worker needs it to build the link; `auth_tokens` only ever stores hashes.
+- **Consequences:** a finished email job cannot be re-sent by requeueing it. Its token is gone, so the
+  handler sends it straight to DEAD ("already redacted"); the user asks for a new link instead. Pending
+  email jobs (and their tokens) are visible through the scheduler's admin `/jobs` API, which requires the
+  operator API key.
+- **Failure handling:** retryable provider errors (429, 5xx, 409, timeouts) fail the job so it is retried;
+  non-retryable ones (validation errors, unverified domain, bad key) and unrenderable payloads throw
+  `NonRetryableJobException` and go straight to DEAD.
+- **Tests** deliver queued email jobs through the real `SendEmailJobHandler` before reading the test
+  inbox; a worker-profile end-to-end test runs real workers against a MockWebServer standing in for
+  Resend (503 then 200 → one delivery after a retry; 422 → DEAD after one attempt).

@@ -32,16 +32,20 @@ public class AuthTokenService {
 
     private final JdbcTemplate jdbc;
 
-    /** Creates a token, invalidating any earlier unused token of the same purpose. Returns the raw token. */
-    public String issue(UUID userId, Purpose purpose, Duration ttl) {
+    /** A freshly issued token: its row id (safe to log or use in keys) and the raw token (email only). */
+    public record IssuedToken(UUID id, String token) {}
+
+    /** Creates a token, invalidating any earlier unused token of the same purpose. */
+    public IssuedToken issue(UUID userId, Purpose purpose, Duration ttl) {
         invalidateAll(userId, purpose);
         byte[] bytes = new byte[32];
         RANDOM.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        UUID id = UUID.randomUUID();
         jdbc.update("insert into auth_tokens (id, user_id, purpose, token_hash, expires_at) "
             + "values (?, ?, ?, ?, now() + make_interval(secs => ?))",
-            UUID.randomUUID(), userId, purpose.name(), hash(token), (double) ttl.toSeconds());
-        return token;
+            id, userId, purpose.name(), hash(token), (double) ttl.toSeconds());
+        return new IssuedToken(id, token);
     }
 
     /**

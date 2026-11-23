@@ -1,5 +1,6 @@
 package com.sanvi.jobscheduler.pulsecheck.auth;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -16,8 +17,8 @@ import org.springframework.web.ErrorResponseException;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
-import com.sanvi.jobscheduler.pulsecheck.AppProperties;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailTemplates;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailJob;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -39,7 +40,7 @@ public class AccountManagementService {
     private final AuthTokenService tokens;
     private final PasswordEncoder passwordEncoder;
     private final JdbcTemplate jdbc;
-    private final AppProperties app;
+    private final EmailOutbox outbox;
     private final AuthProtectionProperties protection;
     private final FindByIndexNameSessionRepository<? extends Session> sessions;
 
@@ -69,15 +70,18 @@ public class AccountManagementService {
      * Emails a 1 h reset link if the address has an account; does nothing otherwise. The caller answers
      * the same way in both cases, so this cannot be used to discover accounts.
      */
+    @Transactional
     public void forgotPassword(String rawEmail) {
         String email = EmailAddresses.normalize(rawEmail);
         if (!EmailAddresses.isValid(email)) {
             return;
         }
         users.findByEmail(email).ifPresent(user -> {
-            String token = tokens.issue(user.getId(), AuthTokenService.Purpose.PASSWORD_RESET, protection.resetTokenTtl());
-            accounts.sendQuietly(EmailTemplates.passwordReset(user.getEmail(), app.link("/reset-password", token),
-                protection.resetTokenTtl().toMinutes()));
+            AuthTokenService.IssuedToken issued = tokens.issue(user.getId(), AuthTokenService.Purpose.PASSWORD_RESET,
+                protection.resetTokenTtl());
+            outbox.enqueue(new EmailJob(EmailJob.Template.PASSWORD_RESET, user.getEmail(),
+                Map.of("ttlMinutes", String.valueOf(protection.resetTokenTtl().toMinutes())),
+                "email:reset:" + issued.id(), issued.token()));
         });
     }
 
