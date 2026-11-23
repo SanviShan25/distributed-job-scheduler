@@ -327,3 +327,55 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
 - **Tests** deliver queued email jobs through the real `SendEmailJobHandler` before reading the test
   inbox; a worker-profile end-to-end test runs real workers against a MockWebServer standing in for
   Resend (503 then 200 → one delivery after a retry; 422 → DEAD after one attempt).
+
+### Keeping email payloads out of logs and errors
+
+An audit of every place a `SEND_EMAIL` payload (which may hold a one-time token) could surface:
+
+- **Worker logs and job errors:** `WorkerLoop` logs only ids and the failure message. `SendEmailJobHandler`
+  never puts the payload, a parser message, or a parser exception into its errors: a malformed payload
+  becomes `malformed SEND_EMAIL payload (<exception type>)` with no cause attached, because JSON parser
+  messages can quote the input, and failure messages become `last_error` and log lines.
+- **Postgres error details:** for constraint violations Postgres adds `DETAIL: Failing row contains (…)`
+  with the whole row, payload included, and pgjdbc copies it into exception messages by default. The
+  datasource sets `logServerErrorDetail=false`, so database exceptions (and any log line or 500 that
+  prints them) keep the constraint name but not row contents.
+- **Admin jobs API:** `/jobs`, `/jobs/{id}`, `/jobs/dead` etc. serialize a pending `SEND_EMAIL` job's
+  `secret` as `[redacted]` (finished jobs no longer contain it at all, see V9). Other job types are
+  unchanged.
+- **Unchanged by design:** `LoggingEmailSender` logs rendered emails including links. That is its
+  purpose, and it refuses to run unless the app is on localhost. Nothing else logs payloads: Reaper,
+  sweeper and worker log lines carry ids only, MDC holds jobId/workerId/attempt, Redis holds only job ids.
+
+### Password hashing outside transactions
+
+Argon2id is deliberately slow and memory-hard; doing it inside a database transaction would hold a pooled
+connection for the whole hash. Sign-up, reset-password, change-password and delete-account therefore hash
+or verify first and then run a short `TransactionTemplate` block that only touches the database; ending
+sessions (Redis) happens after commit. A test wraps the real encoder and fails if any hash or verification
+runs while a transaction is active.
+
+### DOWN/UP alert emails (V10)
+
+- **Same transaction as the incident.** `MonitorCheckService` opens or resolves the incident and calls
+  `AlertService` inside the same transaction (which holds the monitor's row lock); `AlertService` is
+  `Propagation.MANDATORY` so it cannot be called outside one. The alert's email job is written in that
+  transaction (the jobs table is the outbox), so an alert is never lost if the worker dies right after the
+  check, and never sent for a transition that rolled back. If Redis misses the enqueue, the sweeper
+  re-enqueues the QUEUED row.
+- **Exactly once per transition.** `alert_events` has one row per (incident, DOWN|UP), unique, recording
+  what was done (`SENT`, `PAUSED`, `SKIPPED`, `NO_RECIPIENT`). A transition that was already handled is
+  ignored, and the email job's idempotency key is `alert:{incidentId}:down|up`. Retried check jobs never
+  re-open an incident (the partial unique index), so they cannot cause a second alert either.
+- **Recipients:** the owner's account email, only if verified (otherwise `NO_RECIPIENT`, logged).
+- **Content:** site name and URL, times as "23 Nov 2026 at 14:05 UTC" (UTC with an explicit label, as
+  users have no time-zone setting yet), the cause from the failing check, a "View monitor" button linking to
+  `{app base URL}/monitors/{id}`, and for UP the downtime in words ("Back up after 12 minutes", measured from
+  the incident's start, i.e. the first failed check).
+- **Flapping cap: at most 6 alert emails per monitor in any rolling hour, counting the pause note.** The
+  first 5 transitions in an hour get their alerts; the 6th gets an "alerts paused for this monitor for an
+  hour" note *instead of* its alert; later transitions are skipped (recorded as `SKIPPED` and logged) until
+  an hour after the note. Counting uses `alert_events` and the database clock; decisions are serialized by
+  the monitor row lock. Configurable as `pulsecheck.alerts.max-emails-per-monitor-per-hour`.
+- **Changing a monitor's URL** resolves its open incident without an UP alert: it says nothing about
+  whether the old site recovered.

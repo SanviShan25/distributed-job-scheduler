@@ -13,7 +13,10 @@ public record EmailJob(Template template, String to, Map<String, String> params,
     public enum Template {
         VERIFY_EMAIL,
         PASSWORD_RESET,
-        ALREADY_REGISTERED
+        ALREADY_REGISTERED,
+        ALERT_DOWN,
+        ALERT_UP,
+        ALERTS_PAUSED
     }
 
     public EmailJob {

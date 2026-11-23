@@ -16,6 +16,11 @@ spring:
     url: ${DB_URL:jdbc:postgresql://127.0.0.1:5433/jobs}
     username: ${DB_USER:jobs}
     password: ${DB_PASSWORD:}
+    hikari:
+      data-source-properties:
+        # Postgres error DETAIL lines can contain whole rows (e.g. "Failing row contains (...)"), including job
+        # payloads with one-time tokens. Keep them out of exception messages and therefore out of logs.
+        logServerErrorDetail: false
   jpa:
     hibernate.ddl-auto: validate
     open-in-view: false
@@ -68,6 +73,9 @@ pulsecheck:
     resend-verification-per-user-per-hour: 3
     forgot-password-per-email-per-hour: 3
     forgot-password-per-ip-per-hour: 10
+  alerts:
+    # Rolling-hour cap per monitor, including the "alerts paused" note that replaces the last one.
+    max-emails-per-monitor-per-hour: 6
   app:
     # Where the web app lives; links in emails point here. Must be a localhost URL with provider=logging.
     base-url: ${PULSECHECK_APP_BASE_URL:http://localhost:8080}

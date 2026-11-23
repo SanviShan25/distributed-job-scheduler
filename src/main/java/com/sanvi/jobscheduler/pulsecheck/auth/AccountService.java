@@ -15,6 +15,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
@@ -40,17 +41,19 @@ public class AccountService {
     private final AuthProtectionProperties protection;
     private final AuthTokenService tokens;
     private final EmailOutbox outbox;
+    private final TransactionTemplate tx;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
     public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
-            AuthProtectionProperties protection, AuthTokenService tokens, EmailOutbox outbox) {
+            AuthProtectionProperties protection, AuthTokenService tokens, EmailOutbox outbox, TransactionTemplate tx) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
         this.protection = protection;
         this.tokens = tokens;
         this.outbox = outbox;
+        this.tx = tx;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -61,10 +64,10 @@ public class AccountService {
      * Registers an account. If the email (case-insensitively) is already registered, nothing changes and
      * the caller gets exactly the same answer as for a new account, so sign-up cannot be used to find out
      * who has an account. The password is hashed in both cases so the two paths also take similar time.
-     * The account, its verification token and the email job are written in one transaction; the email is
-     * sent by a worker afterwards.
+     * The password is hashed first, outside any transaction (Argon2 is deliberately slow and must not hold
+     * a database connection); then the account, its verification token and the email job are written in
+     * one short transaction. The email is sent by a worker afterwards.
      */
-    @Transactional
     public SignupResult signup(String rawEmail, String password) {
         String email = EmailAddresses.normalize(rawEmail);
         if (!EmailAddresses.isValid(email)) {
@@ -73,6 +76,11 @@ public class AccountService {
         validatePassword(password);
 
         String hash = passwordEncoder.encode(password);
+        tx.executeWithoutResult(status -> createAccount(email, hash));
+        return new SignupResult(email, false);
+    }
+
+    private void createAccount(String email, String hash) {
         UUID id = UUID.randomUUID();
         int inserted = jdbc.update(
             "insert into users (id, email, password_hash, created_at, email_verified, failed_login_count) "
@@ -90,7 +98,6 @@ public class AccountService {
             outbox.enqueue(new EmailJob(EmailJob.Template.ALREADY_REGISTERED, email, Map.of(),
                 "email:already-registered:" + existing + ":" + hour, null));
         }
-        return new SignupResult(email, false);
     }
 
     /**

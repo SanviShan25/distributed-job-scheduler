@@ -50,4 +50,20 @@ class EmailTemplatesTest {
             .contains("href=\"https://example.com/?a=1&amp;b=2\"");
         assertThat(email.text()).contains("<script>alert(1)</script>"); // plain text needs no escaping
     }
+
+    @Test
+    void downtimeIsWrittenInPlainWords() {
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(40))).isEqualTo("less than a minute");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(61))).isEqualTo("1 minute");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(12).plusSeconds(59))).isEqualTo("12 minutes");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(125))).isEqualTo("2 hours 5 minutes");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofHours(1))).isEqualTo("1 hour");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofHours(27).plusMinutes(10))).isEqualTo("1 day 3 hours");
+    }
+
+    @Test
+    void timesCarryTheirTimeZone() {
+        assertThat(EmailTemplates.formatTime(java.time.Instant.parse("2026-11-23T14:05:30Z")))
+            .isEqualTo("23 Nov 2026 at 14:05 UTC");
+    }
 }

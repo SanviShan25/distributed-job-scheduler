@@ -13,6 +13,7 @@ import org.springframework.session.FindByIndexNameSessionRepository;
 import org.springframework.session.Session;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.ErrorResponseException;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
@@ -43,6 +44,7 @@ public class AccountManagementService {
     private final EmailOutbox outbox;
     private final AuthProtectionProperties protection;
     private final FindByIndexNameSessionRepository<? extends Session> sessions;
+    private final TransactionTemplate tx;
 
     // ------------------------------------------------------------------ email verification
 
@@ -87,16 +89,20 @@ public class AccountManagementService {
 
     /**
      * Sets a new password with a reset token. Also unlocks the account, marks the email verified (the user
-     * just proved they read it) and logs out every session of the user.
+     * just proved they read it) and logs out every session of the user. The new password is hashed before
+     * the transaction starts, and sessions (Redis) are ended after it commits.
      */
-    @Transactional
     public void resetPassword(String token, String newPassword) {
         AccountService.validatePassword(newPassword);
-        UUID userId = tokens.consume(token, AuthTokenService.Purpose.PASSWORD_RESET)
-            .orElseThrow(() -> ApiProblems.badRequest(INVALID_LINK));
-        jdbc.update("update users set password_hash = ?, failed_login_count = 0, locked_until = null, "
-            + "email_verified = true where id = ?", passwordEncoder.encode(newPassword), userId);
-        tokens.invalidateAll(userId, AuthTokenService.Purpose.PASSWORD_RESET);
+        String hash = passwordEncoder.encode(newPassword);
+        UUID userId = tx.execute(status -> {
+            UUID owner = tokens.consume(token, AuthTokenService.Purpose.PASSWORD_RESET)
+                .orElseThrow(() -> ApiProblems.badRequest(INVALID_LINK));
+            jdbc.update("update users set password_hash = ?, failed_login_count = 0, locked_until = null, "
+                + "email_verified = true where id = ?", hash, owner);
+            tokens.invalidateAll(owner, AuthTokenService.Purpose.PASSWORD_RESET);
+            return owner;
+        });
         int ended = endSessions(userId, null);
         log.info("Password reset for account {}; {} session(s) ended", userId, ended);
     }
@@ -104,13 +110,15 @@ public class AccountManagementService {
     // ------------------------------------------------------------------ logged-in account changes
 
     /** Changes the password and logs out every <em>other</em> session; the current one stays. */
-    @Transactional
     public void changePassword(UUID userId, String currentPassword, String newPassword, String currentSessionId) {
         AppUser user = existing(userId);
         requirePassword(user, currentPassword);
         AccountService.validatePassword(newPassword);
-        jdbc.update("update users set password_hash = ? where id = ?", passwordEncoder.encode(newPassword), userId);
-        tokens.invalidateAll(userId, AuthTokenService.Purpose.PASSWORD_RESET);
+        String hash = passwordEncoder.encode(newPassword);
+        tx.executeWithoutResult(status -> {
+            jdbc.update("update users set password_hash = ? where id = ?", hash, userId);
+            tokens.invalidateAll(userId, AuthTokenService.Purpose.PASSWORD_RESET);
+        });
         int ended = endSessions(userId, currentSessionId);
         log.info("Password changed for account {}; {} other session(s) ended", userId, ended);
     }
@@ -118,15 +126,17 @@ public class AccountManagementService {
     /**
      * Deletes the account and everything it owns: monitors (with their check results and incidents, via
      * ON DELETE CASCADE), their recurring schedules, tokens and all sessions. Already-queued checks of the
-     * deleted monitors run as no-ops.
+     * deleted monitors run as no-ops. The password is verified before the transaction starts.
      */
-    @Transactional
     public void deleteAccount(UUID userId, String password) {
         AppUser user = existing(userId);
         requirePassword(user, password);
-        int schedules = jdbc.update(
-            "delete from job_schedules where id in (select schedule_id from monitors where user_id = ?)", userId);
-        jdbc.update("delete from users where id = ?", userId);
+        int schedules = tx.execute(status -> {
+            int deleted = jdbc.update(
+                "delete from job_schedules where id in (select schedule_id from monitors where user_id = ?)", userId);
+            jdbc.update("delete from users where id = ?", userId);
+            return deleted;
+        });
         int ended = endSessions(userId, null);
         log.info("Account {} deleted with {} monitor schedule(s); {} session(s) ended", userId, schedules, ended);
     }

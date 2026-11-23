@@ -56,6 +56,80 @@ public final class EmailTemplates {
             "If this wasn't you, you can ignore this email. Nothing has changed on your account."));
     }
 
+    // ------------------------------------------------------------------ alerts
+
+    private static final java.time.format.DateTimeFormatter WHEN = java.time.format.DateTimeFormatter
+        .ofPattern("d MMM yyyy 'at' HH:mm 'UTC'", java.util.Locale.ENGLISH).withZone(java.time.ZoneOffset.UTC);
+    private static final String ALERT_FOOTER = "You're receiving this because this site is monitored with PulseCheck.";
+
+    /** "23 Nov 2026 at 14:05 UTC" */
+    public static String formatTime(java.time.Instant instant) {
+        return WHEN.format(instant);
+    }
+
+    /** "less than a minute", "1 minute", "12 minutes", "2 hours 5 minutes", "1 day 3 hours" */
+    public static String formatDuration(java.time.Duration duration) {
+        long minutes = Math.max(0, duration.toMinutes());
+        if (minutes < 1) {
+            return "less than a minute";
+        }
+        long days = minutes / (24 * 60);
+        long hours = (minutes / 60) % 24;
+        long mins = minutes % 60;
+        if (days > 0) {
+            return plural(days, "day") + (hours > 0 ? " " + plural(hours, "hour") : "");
+        }
+        if (hours > 0) {
+            return plural(hours, "hour") + (mins > 0 ? " " + plural(mins, "minute") : "");
+        }
+        return plural(mins, "minute");
+    }
+
+    private static String plural(long n, String unit) {
+        return n + " " + unit + (n == 1 ? "" : "s");
+    }
+
+    public static EmailSender.Email alertDown(String to, String name, String url, java.time.Instant since, String cause,
+            String monitorLink) {
+        return render(to, new Content(
+            name + " is DOWN",
+            name + " is down",
+            List.of(url + " has not been responding since " + formatTime(since) + ".",
+                "Cause: " + cause + ".",
+                "We'll email you again as soon as it's back up."),
+            "View monitor",
+            monitorLink,
+            ALERT_FOOTER));
+    }
+
+    public static EmailSender.Email alertUp(String to, String name, String url, java.time.Instant downSince,
+            java.time.Instant upAt, String cause, String monitorLink) {
+        String downtime = formatDuration(java.time.Duration.between(downSince, upAt));
+        return render(to, new Content(
+            name + " is back UP after " + downtime,
+            "Back up after " + downtime,
+            List.of(url + " is responding again as of " + formatTime(upAt) + ".",
+                "It was down from " + formatTime(downSince) + " (cause: " + cause + ")."),
+            "View monitor",
+            monitorLink,
+            ALERT_FOOTER));
+    }
+
+    public static EmailSender.Email alertsPaused(String to, String name, String url, String currentStatus,
+            int maxPerHour, String monitorLink) {
+        return render(to, new Content(
+            "Alerts paused for " + name + " for an hour",
+            "Alerts for " + name + " are paused for an hour",
+            List.of(url + " has changed between up and down many times in the last hour, so we've paused alert "
+                    + "emails for this monitor for an hour to avoid flooding your inbox (at most " + maxPerHour
+                    + " emails per hour).",
+                "Its status when we paused: " + currentStatus + ". Checks keep running; the monitor page shows the "
+                    + "live status."),
+            "View monitor",
+            monitorLink,
+            ALERT_FOOTER));
+    }
+
     /** Builds both parts of an email from its content. */
     public static EmailSender.Email render(String to, Content content) {
         return new EmailSender.Email(to, content.subject(), text(content), html(content));

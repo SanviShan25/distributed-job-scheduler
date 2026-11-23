@@ -7,9 +7,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.sanvi.jobscheduler.pulsecheck.alert.AlertService;
 import com.sanvi.jobscheduler.pulsecheck.check.HttpChecker;
 import com.sanvi.jobscheduler.pulsecheck.check.SiteChecker;
 import com.sanvi.jobscheduler.pulsecheck.domain.CheckResult;
+import com.sanvi.jobscheduler.pulsecheck.domain.Incident;
 import com.sanvi.jobscheduler.pulsecheck.domain.Monitor;
 import com.sanvi.jobscheduler.pulsecheck.domain.MonitorStatus;
 import com.sanvi.jobscheduler.pulsecheck.repo.CheckResultRepository;
@@ -53,14 +55,16 @@ public class MonitorCheckService {
     private final IncidentRepository incidents;
     private final SiteChecker checker;
     private final TransactionTemplate tx;
+    private final AlertService alerts;
 
     public MonitorCheckService(MonitorRepository monitors, CheckResultRepository results, IncidentRepository incidents,
-            SiteChecker checker, PlatformTransactionManager txManager) {
+            SiteChecker checker, PlatformTransactionManager txManager, AlertService alerts) {
         this.monitors = monitors;
         this.results = results;
         this.incidents = incidents;
         this.checker = checker;
         this.tx = new TransactionTemplate(txManager);
+        this.alerts = alerts;
     }
 
     public Result runCheck(UUID monitorId) {
@@ -104,10 +108,21 @@ public class MonitorCheckService {
         if (next == MonitorStatus.DOWN) {
             results.flush();
             Instant startedAt = results.streakStartedAt(monitorId, failures);
-            opened = incidents.openIfNoneOpen(UUID.randomUUID(), monitorId,
-                startedAt == null ? checkedAt : startedAt, outcome.error()) == 1;
+            Instant downSince = startedAt == null ? checkedAt : startedAt;
+            UUID incidentId = UUID.randomUUID();
+            opened = incidents.openIfNoneOpen(incidentId, monitorId, downSince, outcome.error()) == 1;
+            if (opened) {
+                // Same transaction as the incident: the alert's email job commits (or rolls back) with it.
+                alerts.incidentOpened(monitor, incidentId, downSince, outcome.error());
+            }
         } else if (next == MonitorStatus.UP) {
+            // Safe to read-then-resolve: this transaction holds the monitor's row lock.
+            Incident open = incidents.findByMonitorIdAndResolvedAtIsNull(monitorId).orElse(null);
             resolved = incidents.resolveOpen(monitorId, checkedAt) == 1;
+            if (resolved && open != null) {
+                Instant upAt = checkedAt.isBefore(open.getStartedAt()) ? open.getStartedAt() : checkedAt;
+                alerts.incidentResolved(monitor, open.getId(), open.getStartedAt(), upAt, open.getCause());
+            }
         }
 
         if (previous != next) {

@@ -23,13 +23,25 @@ public class SendEmailJobHandler implements JobHandler {
         return EmailOutbox.JOB_TYPE;
     }
 
+    /**
+     * Never puts the payload (or a parser message quoting it) into an exception: exception messages become
+     * the job's {@code last_error} and appear in worker logs, and the payload may hold a one-time token.
+     */
     @Override
     public void handle(String payload) {
+        EmailJob job;
+        try {
+            job = EmailOutbox.parse(payload);
+        } catch (RuntimeException e) {
+            // Deliberately neither the parser's message nor the exception as cause: both can quote the input.
+            throw new NonRetryableJobException("malformed SEND_EMAIL payload (" + e.getClass().getSimpleName() + ")");
+        }
         EmailSender.Email email;
         try {
-            email = composer.compose(EmailOutbox.parse(payload));
+            email = composer.compose(job);
         } catch (RuntimeException e) {
-            throw new NonRetryableJobException("cannot build email: " + e.getMessage(), e);
+            // Composer messages are our own and never contain the secret.
+            throw new NonRetryableJobException("cannot build " + job.template() + " email: " + e.getMessage());
         }
         try {
             sender.send(email);
