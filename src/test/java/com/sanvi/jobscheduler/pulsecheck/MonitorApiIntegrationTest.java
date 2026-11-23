@@ -388,11 +388,9 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void withoutTheDevUserTheApiExplainsWhatIsMissing() throws Exception {
+    void aSessionWhoseAccountWasDeletedIsTreatedAsLoggedOut() throws Exception {
         jdbc.update("delete from users");
-        mvc.perform(get("/api/monitors"))
-            .andExpect(status().isServiceUnavailable())
-            .andExpect(jsonPath("$.detail", containsString("dev")));
+        mvc.perform(get("/api/monitors")).andExpect(status().isUnauthorized());
     }
 
     @Test

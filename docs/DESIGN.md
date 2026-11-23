@@ -172,3 +172,16 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   inside the shared filter chain with a session-based one, which silently breaks real cookie CSRF in
   later tests sharing the Spring context. Tests use `CsrfTestSupport.validCsrf()` (a real
   cookie + header pair) instead.
+
+### Per-user data
+
+- **`CurrentUser` is the logged-in user** (the `SessionUser` in the session), replacing the dev user.
+  It also checks that the account still exists, so a session that outlives a deleted account behaves
+  as logged out (401) instead of acting on a user that is gone.
+- **Ownership is part of every query, not a separate check.** Monitors are loaded with
+  `findByIdAndUserId`, and the checks and incidents endpoints load the monitor through the same method
+  before reading anything, so a missing owner filter cannot slip into one endpoint.
+- **Someone else's monitor is a 404, not a 403**, with the same body as a monitor that does not exist
+  at all. A 403 would confirm that the id is real, which lets ids be probed.
+- **Limits and duplicates are per user:** two users may monitor the same URL, and one user's
+  10-monitor limit does not affect anyone else.
