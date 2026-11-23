@@ -7,9 +7,9 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
 
 ### Data model (V5)
 
-- **Dev user is seeded by code, not by a migration.** `DevUserSeeder` runs only under the `dev`
-  profile, so a production database never gets a password-less account. Flyway migrations run in
-  every environment, and Flyway has no clean way to apply a migration in only some profiles.
+- **Dev user (removed).** Until real accounts existed, a `DevUserSeeder` under the `dev` profile
+  created a password-less user that the API acted as. Both the seeder and the `dev` profile are gone
+  (see "Removing the dev user" below), and V8 deletes any password-less accounts it created.
 - **`check_results.id` is a `BIGINT` identity**, unlike the UUID keys elsewhere. Results are the
   high-volume table (one row per monitor per minute at most): a sequential 8-byte key keeps the
   primary-key index small and insert-friendly, and nothing outside the database needs to know a
@@ -250,3 +250,15 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
 - **A wrong current password returns `403 Your password is incorrect`**, not the login-style 401: the
   caller is already authenticated, so there is no account enumeration to protect against, and a 401
   would make a browser app think the session had ended.
+
+### Removing the dev user (V8)
+
+- **No dev seeder at all, not even a local-only one.** With the logging email sender, a new developer
+  can sign up, copy the verification link from `docker compose logs api` and log in within a minute,
+  using exactly the code path real users take. A seeded account (especially one with a known password)
+  is the kind of convenience that ends up switched on in the wrong environment, so it is not worth
+  keeping. Tests create their own users directly.
+- **V8 deletes password-less accounts** (the only ones were created by the old seeder) together with
+  their monitors (cascade) and those monitors' schedules. Nobody could log in as them, but a password
+  reset could have claimed one.
+- **docker-compose runs the API with only the `api` profile** again.

@@ -50,7 +50,7 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
     @Autowired HttpCheckJobHandler handler;
     @Autowired ScheduleRunner scheduleRunner;
     @Autowired PulseCheckApiTestConfiguration.ScriptedSiteChecker sites;
-    @Autowired PulseCheckProperties props;
+    private static final String OWNER_EMAIL = "owner@example.com";
     @Autowired CheckResultRetention retention;
 
     private UUID devUser;
@@ -61,8 +61,8 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
         jdbc.update("delete from job_schedules");
         sites.reset();
         devUser = UUID.randomUUID();
-        jdbc.update("insert into users (id, email, email_verified) values (?, ?, true)", devUser, props.devUserEmail());
-        var login = UsernamePasswordAuthenticationToken.authenticated(new SessionUser(devUser, props.devUserEmail()),
+        jdbc.update("insert into users (id, email, email_verified) values (?, ?, true)", devUser, OWNER_EMAIL);
+        var login = UsernamePasswordAuthenticationToken.authenticated(new SessionUser(devUser, OWNER_EMAIL),
             null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
         mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity())
             .defaultRequest(get("/").with(authentication(login)).with(validCsrf()))

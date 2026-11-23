@@ -8,7 +8,6 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 /**
  * {@code pulsecheck.*} settings.
  *
- * @param devUserEmail account seeded by {@link DevUserSeeder} under the {@code dev} profile
  * @param checker      HTTP check behaviour and SSRF guard rails
  * @param maxMonitorsPerUser    monitors one user may create
  * @param retentionDays         check results older than this are deleted daily
@@ -17,7 +16,6 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  */
 @ConfigurationProperties(prefix = "pulsecheck")
 public record PulseCheckProperties(
-    @DefaultValue("dev@pulsecheck.local") String devUserEmail,
     @DefaultValue Checker checker,
     @DefaultValue("10") int maxMonitorsPerUser,
     @DefaultValue("90") int retentionDays,

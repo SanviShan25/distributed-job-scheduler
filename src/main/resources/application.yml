@@ -77,8 +77,6 @@ pulsecheck:
     secure-cookie: AUTO
     idle-timeout: 1d
     remember-me-timeout: 30d
-  # Created at startup under the "dev" profile; the API acts as this user until login exists.
-  dev-user-email: dev@pulsecheck.local
   max-monitors-per-user: 10
   retention-days: 90
   retention-batch-size: 5000
