@@ -130,3 +130,45 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
 - **The sign-up response has no id or creation time**, only `email`, `emailVerified` (always false)
   and a message. Returning the real id or `createdAt` for an existing account would reveal that it
   already existed.
+
+### Login, sessions and CSRF
+
+- **Two security filter chains.** `/api/**` (PulseCheck) uses browser sessions and CSRF; `/jobs/**`,
+  `/schedules/**` and everything else keep the stateless `X-API-Key` chain exactly as before. They are
+  separate on purpose: an API key does not log anyone into PulseCheck, and a PulseCheck session does
+  not grant access to the scheduler API.
+- **Sessions live in Redis** (Spring Session, *indexed* repository, namespace `pulsecheck:session`), so
+  any API instance can serve any user and logins survive API restarts. "Indexed" means sessions can be
+  looked up by user id (the principal name is the user id, not the email, so it never changes); the
+  password reset in a later step uses that to end all of a user's sessions.
+- **Session cookie** `PULSECHECK_SESSION`: `HttpOnly`, `SameSite=Lax`, `Path=/`. `Secure` is decided
+  per request by `pulsecheck.session.secure-cookie`: `AUTO` (default) sets it for every host except
+  `localhost`/`127.0.0.1`/`::1`, so plain-HTTP local development works and nothing else can ever get a
+  non-Secure cookie; `ALWAYS`/`NEVER` override. Deciding by host name rather than
+  `request.isSecure()` avoids depending on a TLS-terminating proxy forwarding the scheme correctly.
+- **Timeouts:** 1 day idle and a browser-session cookie by default; with `rememberMe: true`, 30 days
+  idle and a 30-day persistent cookie.
+- **Session fixation:** login always ends up with a fresh session id (`changeSessionId()` on an
+  existing session, otherwise a new session), so an id planted before login is useless afterwards.
+  Login and logout also issue a new CSRF token.
+- **Login errors are uniform:** unknown email, an account without a password, and a wrong password
+  all return `401 Invalid email or password`. For an unknown email a dummy Argon2 hash is checked
+  anyway, so timing does not reveal whether the account exists.
+- **CSRF uses the single-page-app double-submit pattern** (`csrf.spa()` with a JavaScript-readable
+  `XSRF-TOKEN` cookie). Login and sign-up are protected too (prevents login CSRF). How the frontend must
+  use it:
+  1. On start-up call `GET /api/auth/csrf` (with credentials). This sets the `XSRF-TOKEN` cookie and
+     returns `{headerName: "X-XSRF-TOKEN", cookieName: "XSRF-TOKEN", token}`.
+  2. Send the token in the `X-XSRF-TOKEN` header on every `POST`/`PATCH`/`PUT`/`DELETE` to `/api/**`.
+     The simplest robust approach is to read the current `XSRF-TOKEN` cookie right before each request
+     (Axios does this automatically with its default `xsrfCookieName`/`xsrfHeaderName`).
+  3. The token changes on login and logout. Reading the cookie per request handles this; an app that
+     caches the token must call `GET /api/auth/csrf` again after login/logout.
+  4. All requests need `credentials: "include"` (fetch) or `withCredentials: true` (Axios).
+  A missing or wrong token gets `403` with a message pointing to `GET /api/auth/csrf`.
+- **Interim state:** `/api/monitors/**` now requires a logged-in user, but `CurrentUser` still resolves
+  to the dev user until the next step switches it to the logged-in user.
+- **Testing note:** Spring Security's `csrf()` MockMvc helper permanently replaces the CSRF repository
+  inside the shared filter chain with a session-based one, which silently breaks real cookie CSRF in
+  later tests sharing the Spring context. Tests use `CsrfTestSupport.validCsrf()` (a real
+  cookie + header pair) instead.

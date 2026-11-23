@@ -13,6 +13,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param maxMonitorsPerUser    monitors one user may create
  * @param retentionDays         check results older than this are deleted daily
  * @param retentionBatchSize    rows deleted per statement by the retention job
+ * @param session               login session cookie and timeouts
  */
 @ConfigurationProperties(prefix = "pulsecheck")
 public record PulseCheckProperties(
@@ -20,7 +21,34 @@ public record PulseCheckProperties(
     @DefaultValue Checker checker,
     @DefaultValue("10") int maxMonitorsPerUser,
     @DefaultValue("90") int retentionDays,
-    @DefaultValue("5000") int retentionBatchSize) {
+    @DefaultValue("5000") int retentionBatchSize,
+    @DefaultValue Session session) {
+
+    /** When the session cookie gets the {@code Secure} attribute. */
+    public enum SecureCookie {
+        /** Secure unless the request is for localhost / 127.0.0.1 / ::1 (plain-HTTP local development). */
+        AUTO,
+        ALWAYS,
+        NEVER
+    }
+
+    /**
+     * @param cookieName         session cookie name
+     * @param secureCookie       AUTO (default), ALWAYS or NEVER
+     * @param idleTimeout        session idle timeout without "remember me"
+     * @param rememberMeTimeout  idle timeout and cookie lifetime with "remember me"
+     */
+    public record Session(
+        @DefaultValue("PULSECHECK_SESSION") String cookieName,
+        @DefaultValue("AUTO") SecureCookie secureCookie,
+        @DefaultValue("1d") java.time.Duration idleTimeout,
+        @DefaultValue("30d") java.time.Duration rememberMeTimeout) {
+
+        public static Session defaults() {
+            return new Session("PULSECHECK_SESSION", SecureCookie.AUTO, java.time.Duration.ofDays(1),
+                java.time.Duration.ofDays(30));
+        }
+    }
 
     /**
      * @param timeout       total budget for one check, across all redirect hops

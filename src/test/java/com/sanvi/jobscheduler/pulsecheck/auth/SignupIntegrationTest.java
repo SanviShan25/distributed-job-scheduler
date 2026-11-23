@@ -14,6 +14,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import static com.sanvi.jobscheduler.support.CsrfTestSupport.validCsrf;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -46,7 +47,7 @@ class SignupIntegrationTest extends AbstractIntegrationTest {
     }
 
     private MvcResult signup(String email, String password, int expectedStatus) throws Exception {
-        return anonymous.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        return anonymous.perform(post("/api/auth/signup").with(validCsrf()).contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("email", email, "password", password))))
             .andExpect(status().is(expectedStatus))
             .andReturn();
@@ -58,7 +59,7 @@ class SignupIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void signupCreatesAnUnverifiedAccountWithANormalisedEmail() throws Exception {
-        anonymous.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        anonymous.perform(post("/api/auth/signup").with(validCsrf()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"email\":\"  Alice@Example.COM \",\"password\":\"" + GOOD_PASSWORD + "\"}"))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.email").value("alice@example.com"))
@@ -110,7 +111,7 @@ class SignupIntegrationTest extends AbstractIntegrationTest {
         for (String email : List.of("", "   ", "plainaddress", "@example.com", "user@", "user@example",
                 "user name@example.com", "user@exa mple.com", "a@b@example.com", "user@-example.com",
                 "x".repeat(250) + "@example.com")) {
-            anonymous.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+            anonymous.perform(post("/api/auth/signup").with(validCsrf()).contentType(MediaType.APPLICATION_JSON)
                     .content(json.writeValueAsString(Map.of("email", email, "password", GOOD_PASSWORD))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detail", containsString("valid email")));
@@ -142,9 +143,9 @@ class SignupIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void missingFieldsAreRejected() throws Exception {
-        anonymous.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON).content("{}"))
+        anonymous.perform(post("/api/auth/signup").with(validCsrf()).contentType(MediaType.APPLICATION_JSON).content("{}"))
             .andExpect(status().isBadRequest());
-        anonymous.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+        anonymous.perform(post("/api/auth/signup").with(validCsrf()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"email\":\"x@example.com\"}"))
             .andExpect(status().isBadRequest());
     }

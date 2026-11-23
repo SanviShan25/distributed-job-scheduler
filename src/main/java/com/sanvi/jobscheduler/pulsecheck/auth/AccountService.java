@@ -5,26 +5,41 @@ import java.time.Instant;
 import java.util.UUID;
 
 import org.springframework.context.annotation.Profile;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
+import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
+import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-/** PulseCheck accounts: sign-up (more account operations follow in later steps). */
+/** PulseCheck accounts: sign-up and password authentication. */
 @Service
 @Profile("api")
-@RequiredArgsConstructor
 @Slf4j
 public class AccountService {
     public static final int MIN_PASSWORD_LENGTH = 10;
     public static final int MAX_PASSWORD_LENGTH = 128;
 
+    public static final String INVALID_CREDENTIALS = "Invalid email or password";
+
     private final JdbcTemplate jdbc;
     private final PasswordEncoder passwordEncoder;
+    private final AppUserRepository users;
+    /** Compared against when the email is unknown, so both paths cost one full hash check. */
+    private final String dummyHash;
+
+    public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users) {
+        this.jdbc = jdbc;
+        this.passwordEncoder = passwordEncoder;
+        this.users = users;
+        this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
+    }
 
     /** What sign-up tells the caller. Identical whether or not the email was already registered. */
     public record SignupResult(String email, boolean emailVerified) {}
@@ -52,6 +67,31 @@ public class AccountService {
             log.info("Sign-up for an already registered email; no account created");
         }
         return new SignupResult(email, false);
+    }
+
+    /**
+     * Checks an email/password pair. Every failure (unknown email, account without a password, wrong
+     * password) produces the same "Invalid email or password" error, and unknown emails still run a full
+     * hash comparison so the response time does not reveal whether the account exists.
+     */
+    public AppUser authenticate(String rawEmail, String password) {
+        String email = EmailAddresses.normalize(rawEmail);
+        AppUser user = email == null ? null : users.findByEmail(email).orElse(null);
+        String candidate = password == null ? "" : password;
+        if (user == null || user.getPasswordHash() == null) {
+            passwordEncoder.matches(candidate, dummyHash);
+            throw invalidCredentials();
+        }
+        if (!passwordEncoder.matches(candidate, user.getPasswordHash())) {
+            throw invalidCredentials();
+        }
+        return user;
+    }
+
+    public static ErrorResponseException invalidCredentials() {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, INVALID_CREDENTIALS);
+        problem.setTitle("Unauthorized");
+        return new ErrorResponseException(HttpStatus.UNAUTHORIZED, problem, null);
     }
 
     static void validatePassword(String password) {
