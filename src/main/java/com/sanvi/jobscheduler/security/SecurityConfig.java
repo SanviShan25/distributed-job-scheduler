@@ -23,7 +23,10 @@ import org.springframework.security.web.csrf.CsrfTokenRepository;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Two independent security setups.
+ * Independent security setups.
+ *
+ * <p><b>Alert email links ({@code /alert-recipients/confirm|unsubscribe}), public.</b> The single-use token in
+ * the link is the credential; no session, no CSRF.
  *
  * <p><b>PulseCheck ({@code /api/**}), browser sessions.</b> Users log in with email and password; the
  * session lives in Redis (Spring Session) behind an HttpOnly, SameSite=Lax cookie. CSRF protection uses the
@@ -58,6 +61,26 @@ public class SecurityConfig {
     @Bean
     CsrfTokenRepository csrfTokenRepository() {
         return CookieCsrfTokenRepository.withHttpOnlyFalse();
+    }
+
+    /**
+     * Confirmation and unsubscribe links from alert emails: public, stateless, no CSRF. The single-use token
+     * in the request is the credential, so a forged cross-site request would need the token anyway, and mail
+     * providers' RFC 8058 one-click unsubscribe POSTs cannot carry a CSRF token or session.
+     */
+    @Bean
+    @Order(0)
+    SecurityFilterChain alertRecipientLinksSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .securityMatcher("/alert-recipients/confirm", "/alert-recipients/unsubscribe")
+            .csrf(csrf -> csrf.disable())
+            .httpBasic(basic -> basic.disable())
+            .formLogin(form -> form.disable())
+            .logout(logout -> logout.disable())
+            .requestCache(cache -> cache.disable())
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
     }
 
     @Bean

@@ -16,7 +16,7 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   result's id in advance.
 - **`alert_emails` is a comma-separated `TEXT` column** rather than a `text[]` or a child table. It is
   write-rarely, read-whole, and not queried by individual address yet; a child table can replace it
-  if per-recipient settings appear.
+  if per-recipient settings appear. (It did: V11 replaced it with `alert_recipients`, see below.)
 - **History is deleted with the monitor** (`ON DELETE CASCADE` on `check_results` and `incidents`).
   A deleted monitor's history has no owner-facing view, and keeping orphaned rows would only grow the
   retention job's work.
@@ -379,3 +379,40 @@ runs while a transaction is active.
   the monitor row lock. Configurable as `pulsecheck.alerts.max-emails-per-monitor-per-hour`.
 - **Changing a monitor's URL** resolves its open incident without an UP alert: it says nothing about
   whether the old site recovered.
+
+### Extra alert recipients with double opt-in (V11)
+
+- **`alert_recipients` replaces `monitors.alert_emails`.** Each row is one address for one monitor with a status:
+  `PENDING` (added by the owner, gets only the confirmation email), `CONFIRMED` (clicked the link, gets alerts)
+  or `UNSUBSCRIBED`. Existing `alert_emails` were copied as `PENDING` (at most 5, never the owner's own address)
+  because nobody had opted in; the owner can send them a confirmation with the resend endpoint. The API rejects
+  the old `alertEmails` field instead of silently ignoring it.
+- **API:** monitors show `notifyOwner` and `recipients` (id, email, status, timestamps).
+  `POST /api/monitors/{id}/recipients` adds one, `POST .../recipients/{rid}/resend` sends a new confirmation
+  (the old link stops working), `DELETE .../recipients/{rid}` removes one. Max 5 `PENDING` + `CONFIRMED` per
+  monitor (unsubscribed rows are kept so the owner sees who left, and do not count); the monitor row is locked
+  while adding so concurrent requests cannot exceed it. Re-adding an unsubscribed address makes it `PENDING`
+  again: they must opt in again.
+- **Tokens** live in `alert_recipient_tokens`: SHA-256 only, single-use (`used_at`, consumed atomically).
+  Confirmation links expire after 72 h. Unsubscribe links do not expire (people unsubscribe from old emails),
+  and **each alert email gets its own token**, minted when the alert is queued and carried in the job's `secret`
+  (redacted by V9 once sent). Stored hashes can't be turned back into links, so a stable per-recipient token
+  would have to be stored reversibly; a token per email avoids that.
+- **Unsubscribe is per address, per monitor**, needs no login and is idempotent: using the same link again shows
+  "Unsubscribed" without changing anything. Because links are single-use, a link used before the recipient
+  re-subscribed no longer works (410). The owner can unsubscribe from one monitor too (their links have no
+  recipient id); that sets `monitors.notify_owner = false`, which they can turn back on with
+  `PATCH {"notifyOwner": true}`.
+- **Links never act on GET.** `/alert-recipients/confirm` and `/alert-recipients/unsubscribe` show a page with a
+  button that POSTs, because mail security scanners and link previews fetch links. Mail clients' own Unsubscribe
+  button uses RFC 8058: every alert has `List-Unsubscribe: <url>` and
+  `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, and the POST endpoint accepts that request. These two
+  paths have their own stateless security chain with CSRF off (the token is the credential; a one-click POST from
+  a mail provider can't carry a CSRF token), `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+- **Recipients of an alert:** the owner (verified, `notify_owner`) plus `CONFIRMED` recipients. One email job per
+  recipient: the owner's keeps the key `alert:{incidentId}:down|up`, others append `:{recipientId}`, so a bad
+  address can't delay or fail the others' alerts. The flapping cap is per monitor, so each recipient gets at most
+  6 alert emails an hour.
+- **Confirmation email limits**: 10 per account per hour and 3 per address per day across all accounts, as Redis
+  buckets (so deleting and re-adding a recipient doesn't reset them). Unlike the login limits, these **fail closed**
+  (503) if Redis is down, since the emails go to people who never signed up.

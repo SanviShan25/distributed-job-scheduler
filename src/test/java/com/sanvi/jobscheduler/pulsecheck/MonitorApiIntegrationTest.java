@@ -110,12 +110,13 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
     void createSchedulesChecksRunsOneImmediatelyAndShowsTheStatus() throws Exception {
         String body = mvc.perform(post("/api/monitors").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"Shop\",\"url\":\"https://shop.test\",\"intervalSeconds\":300,"
-                    + "\"alertEmails\":[\"Owner@Example.com\"]}"))
+                    + "\"notifyOwner\":true}"))
             .andExpect(status().isCreated())
             .andExpect(header().string("Location", containsString("/api/monitors/")))
             .andExpect(jsonPath("$.status").value("UNKNOWN"))
             .andExpect(jsonPath("$.url").value("https://shop.test/"))
-            .andExpect(jsonPath("$.alertEmails[0]").value("owner@example.com"))
+            .andExpect(jsonPath("$.notifyOwner").value(true))
+            .andExpect(jsonPath("$.recipients").isEmpty())
             .andReturn().getResponse().getContentAsString();
         UUID id = UUID.fromString(json.readTree(body).get("id").asString());
 

@@ -19,7 +19,12 @@ public final class EmailTemplates {
 
     /** The content of one email; rendered to text and HTML by {@link #render}. */
     public record Content(String subject, String heading, List<String> paragraphs, String buttonLabel,
-        String buttonUrl, String footer) {
+        String buttonUrl, String footer, String unsubscribeUrl) {
+
+        public Content(String subject, String heading, List<String> paragraphs, String buttonLabel, String buttonUrl,
+                String footer) {
+            this(subject, heading, paragraphs, buttonLabel, buttonUrl, footer, null);
+        }
     }
 
     public static EmailSender.Email verification(String to, String link, long ttlHours) {
@@ -60,7 +65,7 @@ public final class EmailTemplates {
 
     private static final java.time.format.DateTimeFormatter WHEN = java.time.format.DateTimeFormatter
         .ofPattern("d MMM yyyy 'at' HH:mm 'UTC'", java.util.Locale.ENGLISH).withZone(java.time.ZoneOffset.UTC);
-    private static final String ALERT_FOOTER = "You're receiving this because this site is monitored with PulseCheck.";
+    private static final String ALERT_FOOTER = "You're receiving this because you get PulseCheck alerts for this monitor.";
 
     /** "23 Nov 2026 at 14:05 UTC" */
     public static String formatTime(java.time.Instant instant) {
@@ -90,7 +95,7 @@ public final class EmailTemplates {
     }
 
     public static EmailSender.Email alertDown(String to, String name, String url, java.time.Instant since, String cause,
-            String monitorLink) {
+            String monitorLink, String unsubscribeLink) {
         return render(to, new Content(
             name + " is DOWN",
             name + " is down",
@@ -99,11 +104,12 @@ public final class EmailTemplates {
                 "We'll email you again as soon as it's back up."),
             "View monitor",
             monitorLink,
-            ALERT_FOOTER));
+            ALERT_FOOTER,
+            unsubscribeLink));
     }
 
     public static EmailSender.Email alertUp(String to, String name, String url, java.time.Instant downSince,
-            java.time.Instant upAt, String cause, String monitorLink) {
+            java.time.Instant upAt, String cause, String monitorLink, String unsubscribeLink) {
         String downtime = formatDuration(java.time.Duration.between(downSince, upAt));
         return render(to, new Content(
             name + " is back UP after " + downtime,
@@ -112,11 +118,12 @@ public final class EmailTemplates {
                 "It was down from " + formatTime(downSince) + " (cause: " + cause + ")."),
             "View monitor",
             monitorLink,
-            ALERT_FOOTER));
+            ALERT_FOOTER,
+            unsubscribeLink));
     }
 
     public static EmailSender.Email alertsPaused(String to, String name, String url, String currentStatus,
-            int maxPerHour, String monitorLink) {
+            int maxPerHour, String monitorLink, String unsubscribeLink) {
         return render(to, new Content(
             "Alerts paused for " + name + " for an hour",
             "Alerts for " + name + " are paused for an hour",
@@ -127,7 +134,22 @@ public final class EmailTemplates {
                     + "live status."),
             "View monitor",
             monitorLink,
-            ALERT_FOOTER));
+            ALERT_FOOTER,
+            unsubscribeLink));
+    }
+
+    public static EmailSender.Email confirmAlertRecipient(String to, String name, String url, String confirmLink,
+            long ttlHours) {
+        return render(to, new Content(
+            "Confirm PulseCheck alerts for " + name,
+            "Get alerts for " + name + "?",
+            List.of("A PulseCheck user asked to send this address an email whenever " + url + " (monitored as \""
+                    + name + "\") goes down or comes back up.",
+                "You'll only get these alerts if you confirm. Every alert has a one-click unsubscribe link."),
+            "Yes, send me alerts",
+            confirmLink,
+            "This link works once and expires in " + ttlHours + " hours. If you don't want these alerts, ignore "
+                + "this email: you won't hear from this monitor."));
     }
 
     /** Builds both parts of an email from its content. */
@@ -144,6 +166,9 @@ public final class EmailTemplates {
         if (c.footer() != null) {
             text.append(c.footer()).append("\n\n");
         }
+        if (c.unsubscribeUrl() != null) {
+            text.append("Unsubscribe from alerts for this monitor: ").append(c.unsubscribeUrl()).append("\n\n");
+        }
         return text.append("-- \nPulseCheck").toString();
     }
 
@@ -157,6 +182,11 @@ public final class EmailTemplates {
         String url = escape(c.buttonUrl());
         String footer = c.footer() == null ? "" : "<p style=\"margin:24px 0 0;font-size:13px;line-height:20px;"
             + "color:#6b7280;" + font + "\">" + escape(c.footer()) + "</p>";
+        if (c.unsubscribeUrl() != null) {
+            footer += "<p style=\"margin:8px 0 0;font-size:13px;line-height:20px;color:#6b7280;" + font + "\">"
+                + "<a href=\"" + escape(c.unsubscribeUrl()) + "\" style=\"color:#6b7280;\">Unsubscribe</a>"
+                + " from alerts for this monitor</p>";
+        }
 
         return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"

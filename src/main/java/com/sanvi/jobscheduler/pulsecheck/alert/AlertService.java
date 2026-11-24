@@ -27,7 +27,13 @@ import lombok.extern.slf4j.Slf4j;
  * row lock, so decisions for one monitor never interleave.
  *
  * <p>Each transition is handled at most once ({@code alert_events} is unique per incident and transition),
- * and the email job's idempotency key is {@code alert:{incidentId}:down|up}.
+ * and the email job's idempotency key is {@code alert:{incidentId}:down|up} for the owner, with
+ * {@code :{recipientId}} appended for each confirmed extra recipient (one job per recipient, so one bad address
+ * cannot hold up or fail the others).
+ *
+ * <p>Recipients: the owner (if verified and not unsubscribed from this monitor) and the monitor's CONFIRMED extra
+ * recipients. Every alert email carries its own single-use unsubscribe token (in the job's {@code secret},
+ * which is redacted once the job finishes).
  *
  * <p>Flapping protection: at most {@code maxEmailsPerMonitorPerHour} alert emails per monitor in any rolling
  * hour. When a transition would exceed that, a single "alerts paused for an hour" note is sent in its place
@@ -42,6 +48,10 @@ public class AlertService {
     private final JdbcTemplate jdbc;
     private final EmailOutbox outbox;
     private final AlertProperties props;
+    private final RecipientTokens tokens;
+
+    /** One alert recipient; {@code recipientId} is null for the monitor's owner. */
+    record Recipient(String email, UUID recipientId) {}
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void incidentOpened(Monitor monitor, UUID incidentId, Instant downSince, String cause) {
@@ -67,10 +77,10 @@ public class AlertService {
             return;
         }
         String key = "alert:" + incidentId + ":" + transition.name().toLowerCase();
-        List<String> recipients = recipients(monitor);
+        List<Recipient> recipients = recipients(monitor);
         if (recipients.isEmpty()) {
             record(monitor, incidentId, transition, "NO_RECIPIENT");
-            log.info("No alert for monitor {} ({}): the owner's email is not verified", monitor.getId(), transition);
+            log.info("No alert for monitor {} ({}): no verified or confirmed recipient", monitor.getId(), transition);
             return;
         }
 
@@ -86,24 +96,40 @@ public class AlertService {
             Map<String, String> pausedParams = baseParams(monitor);
             pausedParams.put("status", transition.name());
             pausedParams.put("maxPerHour", String.valueOf(max));
-            for (String to : recipients) {
-                outbox.enqueue(new EmailJob(EmailJob.Template.ALERTS_PAUSED, to, pausedParams, key, null));
-            }
+            send(monitor, recipients, EmailJob.Template.ALERTS_PAUSED, pausedParams, key);
             log.warn("Alerts for monitor {} paused for an hour after {} emails (flapping)", monitor.getId(), max - 1);
             return;
         }
 
         record(monitor, incidentId, transition, "SENT");
-        for (String to : recipients) {
-            outbox.enqueue(new EmailJob(template, to, params, key, null));
-        }
-        log.info("Queued {} alert for monitor {} (incident {})", transition, monitor.getId(), incidentId);
+        send(monitor, recipients, template, params, key);
+        log.info("Queued {} alert for monitor {} (incident {}) to {} recipient(s)", transition, monitor.getId(),
+            incidentId, recipients.size());
     }
 
-    /** Who receives alerts: the owner, if their email is verified. */
-    List<String> recipients(Monitor monitor) {
-        return jdbc.queryForList("select email from users where id = ? and email_verified", String.class,
-            monitor.getUserId());
+    private void send(Monitor monitor, List<Recipient> recipients, EmailJob.Template template,
+            Map<String, String> params, String baseKey) {
+        for (Recipient recipient : recipients) {
+            String key = recipient.recipientId() == null ? baseKey : baseKey + ":" + recipient.recipientId();
+            RecipientTokens.Issued unsubscribe = tokens.issue(monitor.getId(), recipient.recipientId(),
+                RecipientTokens.Purpose.UNSUBSCRIBE, null);
+            outbox.enqueue(new EmailJob(template, recipient.email(), params, key, unsubscribe.token()));
+        }
+    }
+
+    /**
+     * Who receives alerts: the owner, if their email is verified and they have not unsubscribed from this
+     * monitor, then each CONFIRMED extra recipient (never the owner's address twice).
+     */
+    List<Recipient> recipients(Monitor monitor) {
+        List<Recipient> recipients = new java.util.ArrayList<>(jdbc.query("select u.email from monitors m "
+                + "join users u on u.id = m.user_id where m.id = ? and m.notify_owner and u.email_verified",
+            (rs, n) -> new Recipient(rs.getString("email"), null), monitor.getId()));
+        recipients.addAll(jdbc.query("select r.id, r.email from alert_recipients r join monitors m on m.id = r.monitor_id "
+                + "join users u on u.id = m.user_id where r.monitor_id = ? and r.status = 'CONFIRMED' "
+                + "and lower(r.email) <> lower(u.email) order by r.created_at",
+            (rs, n) -> new Recipient(rs.getString("email"), rs.getObject("id", UUID.class)), monitor.getId()));
+        return recipients;
     }
 
     private boolean alreadyHandled(UUID incidentId, Transition transition) {

@@ -76,6 +76,12 @@ pulsecheck:
   alerts:
     # Rolling-hour cap per monitor, including the "alerts paused" note that replaces the last one.
     max-emails-per-monitor-per-hour: 6
+    # Extra recipients (double opt-in) per monitor, pending or confirmed.
+    max-extra-recipients: 5
+    confirmation-ttl: 72h
+    # Confirmation emails: per account per hour, and per address per day across all accounts.
+    confirmations-per-owner-per-hour: 10
+    confirmations-per-address-per-day: 3
   app:
     # Where the web app lives; links in emails point here. Must be a localhost URL with provider=logging.
     base-url: ${PULSECHECK_APP_BASE_URL:http://localhost:8080}

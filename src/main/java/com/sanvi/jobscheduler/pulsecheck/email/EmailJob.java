@@ -16,7 +16,8 @@ public record EmailJob(Template template, String to, Map<String, String> params,
         ALREADY_REGISTERED,
         ALERT_DOWN,
         ALERT_UP,
-        ALERTS_PAUSED
+        ALERTS_PAUSED,
+        CONFIRM_ALERT_RECIPIENT
     }
 
     public EmailJob {
