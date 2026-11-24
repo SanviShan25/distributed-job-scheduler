@@ -208,7 +208,7 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 
 **PulseCheck** is a website uptime monitor for non-technical users, built on top of this scheduler. The scheduler is the engine: each monitor is a recurring `HTTP_CHECK` schedule, and every check is an ordinary job, with the same retries, leases and recovery.
 
-**Status:** backend only: user accounts, monitors, HTTP checks, status, incidents, uptime and SSRF protection. There is no web UI yet, and emails are written to the API log instead of being sent (a real email provider comes next).
+**Status:** backend only: user accounts, monitors, HTTP checks, status, incidents, uptime, SSRF protection, and real emails (verification, password reset, DOWN/UP alerts) sent through [Resend](https://resend.com). There is no web UI yet.
 
 **How monitoring works**
 
@@ -217,6 +217,15 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 - A monitor turns **DOWN** after 2 failed checks in a row and **UP** again after 1 success. Going DOWN opens an **incident** (starting at the first failed check); coming back UP resolves it. Retries can never create duplicate incidents.
 - `GET /api/monitors/{id}` includes uptime for the last 24 h, 7 d and 30 d, plus the average response time.
 - **SSRF protection:** only public http(s) URLs can be monitored. Every address a host resolves to must be public (private, loopback, link-local/cloud-metadata, CGNAT and similar ranges are refused). The check connects only to the address that was validated, so DNS rebinding can't redirect it, and every redirect hop is validated again.
+
+**Alerts**
+
+- When a monitor goes **DOWN**, PulseCheck emails "*Shop* is DOWN" with the URL, the time (in UTC), the cause (e.g. `HTTP 500`, a timeout) and a link to the monitor. When it comes back, it emails "*Shop* is back UP after 12 minutes".
+- Each DOWN and UP is emailed **exactly once**, even if checks are retried or a worker crashes: the alert is queued in the same database transaction that opens or closes the incident.
+- **Flapping:** at most 6 alert emails per monitor per hour. The 6th is a single "alerts paused for this monitor for an hour" note; later changes are skipped (and logged) until the hour is over.
+- **Who gets alerts:** your account's address once it is verified, plus up to 5 **extra recipients** per monitor. Each extra address is sent a confirmation email first and gets alerts only after clicking "Yes, send me alerts" (double opt-in). Confirmation emails are limited to 10 per account per hour and 3 per address per day.
+- **Every alert has an unsubscribe link**, plus the `List-Unsubscribe` headers that give Gmail and others a one-click Unsubscribe button. It needs no login and stops only that address's alerts for that one monitor. Your own alerts for a monitor can be turned back on with `PATCH /api/monitors/{id}` `{"notifyOwner": true}`.
+- Emails are sent by the workers as ordinary `SEND_EMAIL` jobs, with retries. One-time links are stored only as hashes, and the link token inside an email job is deleted from the job as soon as it is sent.
 
 **Accounts and security**
 
@@ -250,14 +259,46 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 
 | Method & path | Description |
 |---|---|
-| `POST /api/monitors` | Create: `name`, `url`, `intervalSeconds` (60/300/900/3600), optional `alertEmails` |
-| `GET /api/monitors` | List my monitors |
-| `GET /api/monitors/{id}` | One monitor, with its uptime summary |
-| `PATCH /api/monitors/{id}` | Change name, URL, interval or alert emails |
+| `POST /api/monitors` | Create: `name`, `url`, `intervalSeconds` (60/300/900/3600), optional `notifyOwner` (default `true`) |
+| `GET /api/monitors` | List my monitors, each with `notifyOwner` and its `recipients` (email + `PENDING`/`CONFIRMED`/`UNSUBSCRIBED`) |
+| `GET /api/monitors/{id}` | One monitor, with its recipients and uptime summary |
+| `PATCH /api/monitors/{id}` | Change name, URL, interval or `notifyOwner`. Changing the URL closes any open incident without an UP alert |
 | `POST /api/monitors/{id}/pause`, `/resume` | Stop / restart checks |
 | `DELETE /api/monitors/{id}` | Delete the monitor, its history and its schedule |
 | `GET /api/monitors/{id}/checks?from=&to=&page=&size=` | Check history, newest first (`from`/`to` are ISO-8601) |
 | `GET /api/monitors/{id}/incidents` | Incidents, newest first |
+| `POST /api/monitors/{id}/recipients` | `{email}`: add an extra recipient (max 5); sends them a confirmation email |
+| `POST /api/monitors/{id}/recipients/{rid}/resend` | New confirmation email for a pending recipient (the old link stops working) |
+| `DELETE /api/monitors/{id}/recipients/{rid}` | Remove a recipient |
+
+**Links in emails** (no login; opening the link shows a page with a button, only the button acts)
+
+| Path | Description |
+|---|---|
+| `/alert-recipients/confirm?token=` | Confirm an extra recipient |
+| `/alert-recipients/unsubscribe?token=` | Stop alerts for one monitor; also the one-click `List-Unsubscribe` target |
+
+The verification and password-reset links point to `/verify-email` and `/reset-password` on the future web app (`PULSECHECK_APP_BASE_URL`). Until it exists, copy the token from the link and `POST` it to `/api/auth/verify` or `/api/auth/reset-password`.
+
+**Sending real email**
+
+By default (`PULSECHECK_EMAIL_PROVIDER=logging`) emails are written to the **worker** log instead of being sent; that is only allowed while `PULSECHECK_APP_BASE_URL` is a localhost URL. To send real email, set in `.env` and restart with `docker compose up -d --build --force-recreate api worker`:
+
+```bash
+PULSECHECK_EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_...
+EMAIL_FROM=PulseCheck <onboarding@resend.dev>
+```
+
+With Resend's shared test sender `onboarding@resend.dev`, emails are only delivered to the address of your own Resend account. To email anyone, send from your own domain:
+
+1. In Resend, **Domains → Add domain**, preferably a subdomain such as `mail.example.com` so your main domain's email reputation is kept separate.
+2. Add the DNS records Resend shows at your DNS provider:
+   - **SPF** (a `TXT` record, plus an `MX` record for the bounce subdomain): lists the servers allowed to send for the domain.
+   - **DKIM** (a `TXT` record at `resend._domainkey...`): a public key, so receivers can check each email's signature really comes from your domain and wasn't changed.
+   - **DMARC** (optional but recommended; a `TXT` record at `_dmarc.example.com`): tells receivers what to do with mail that fails SPF/DKIM. Start with `v=DMARC1; p=none; rua=mailto:dmarc@example.com` to collect reports, then move to `p=quarantine` once everything passes.
+3. Wait for Resend to show the domain as **Verified** (minutes to a few hours, depending on DNS).
+4. Change `EMAIL_FROM` to an address on that domain, e.g. `PulseCheck <alerts@mail.example.com>`, set `PULSECHECK_APP_BASE_URL` to the app's public `https://` URL, and restart the API and workers.
 
 **Try it** (with the Compose stack running; needs `curl`, `jq` and `awk`)
 
@@ -277,11 +318,11 @@ curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: 
   -d '{"email":"alice@example.com","password":"alice-long-password"}' localhost:8080/api/auth/signup
 ```
 
-Read the verification email from the API log, take the token from its link, and verify:
+Read the verification email from the worker log (with the default `logging` provider; wait a second or two for a worker to send it), take the token from its link, and verify:
 
 ```bash
-docker compose logs api --no-log-prefix --since 10m | grep '"EMAIL to=alice@example.com' | tail -1 | jq -r .message
-TOKEN=$(docker compose logs api --no-log-prefix --since 10m | grep '"EMAIL to=alice@example.com' | tail -1 | jq -r .message | grep -o 'token=[A-Za-z0-9_-]*' | cut -d= -f2)
+docker compose logs worker --no-log-prefix --since 10m | grep '"EMAIL to=alice@example.com' | tail -1 | jq -r .message
+TOKEN=$(docker compose logs worker --no-log-prefix --since 10m | grep '"EMAIL to=alice@example.com' | tail -1 | jq -r .message | grep -o 'token=[A-Za-z0-9_-]*' | cut -d= -f2)
 curl -s -c $ALICE -b $ALICE -H "X-XSRF-TOKEN: $(xsrf $ALICE)" -H 'Content-Type: application/json' \
   -d "{\"token\":\"$TOKEN\"}" localhost:8080/api/auth/verify
 ```
@@ -310,7 +351,7 @@ Bob signs up, verifies and logs in the same way, then tries Alice's monitor:
 curl -s -c $BOB -b $BOB localhost:8080/api/auth/csrf
 curl -s -c $BOB -b $BOB -H "X-XSRF-TOKEN: $(xsrf $BOB)" -H 'Content-Type: application/json' \
   -d '{"email":"bob@example.com","password":"bob-long-password"}' localhost:8080/api/auth/signup
-BTOKEN=$(docker compose logs api --no-log-prefix --since 10m | grep '"EMAIL to=bob@example.com' | tail -1 | jq -r .message | grep -o 'token=[A-Za-z0-9_-]*' | cut -d= -f2)
+BTOKEN=$(docker compose logs worker --no-log-prefix --since 10m | grep '"EMAIL to=bob@example.com' | tail -1 | jq -r .message | grep -o 'token=[A-Za-z0-9_-]*' | cut -d= -f2)
 curl -s -c $BOB -b $BOB -H "X-XSRF-TOKEN: $(xsrf $BOB)" -H 'Content-Type: application/json' \
   -d "{\"token\":\"$BTOKEN\"}" localhost:8080/api/auth/verify
 curl -s -c $BOB -b $BOB -H "X-XSRF-TOKEN: $(xsrf $BOB)" -H 'Content-Type: application/json' \
@@ -346,6 +387,18 @@ This URL can't be monitored: 169.254.169.254 is a private or reserved address
 This URL can't be monitored: localhost resolves to a private or reserved address (127.0.0.1)
 ```
 
+**Live email run** (2026-11-24, `PULSECHECK_EMAIL_PROVIDER=resend`, sender `onboarding@resend.dev`, a real Gmail inbox). The monitored URL was a raw file in a public GitHub repo, deleted to make it return 404 and re-created to make it return 200, so the monitor itself was never edited. (`raw.githubusercontent.com` caches for up to 5 minutes, 404s included, so changes show up with a delay.)
+
+| Time (UTC) | Event | Result |
+|---|---|---|
+| 04:46:57 | Sign up | Verification email accepted by Resend on the first attempt; token pasted into `POST /api/auth/verify` |
+| 04:48:10 | Create monitor, 60 s interval | First check `UP`, HTTP 200 in 377 ms |
+| 05:04:22 | `status.txt` deleted (commit at 05:00:51, served from cache until then) | Check fails: HTTP 404 |
+| 05:05:21 | Second failure | Monitor `DOWN`, incident opened from 05:04:22; "PulseCheck test file is DOWN" accepted by Resend |
+| 05:08:22 | `status.txt` re-created at 05:07:11 | Monitor `UP`; "PulseCheck test file is back UP after 3 minutes" accepted by Resend (downtime 3 min 59.98 s; downtimes are now rounded to the nearest minute, so this would read "4 minutes") |
+
+All three `SEND_EMAIL` jobs (`email:verify:{tokenId}`, `alert:{incidentId}:down`, `alert:{incidentId}:up`) ended `SUCCEEDED` after 1 attempt, with their one-time link token removed (`"secretRedacted": true`); `alert_events` recorded `DOWN SENT` and `UP SENT`, and no log line contained a link token.
+
 ## Running from an IDE
 
 Start Postgres and Redis with the ports enabled in `docker-compose.override.yml`. Then run `JobschedulerApplication` with:
@@ -373,6 +426,10 @@ Every property can be set as an environment variable using Spring's relaxed bind
 | `PORT` | `8081` | worker HTTP port (actuator only) |
 | `WORKER_ID` | `worker-${PORT}` | must be unique per worker process (Compose uses the hostname) |
 | `WORKER_CONCURRENCY` | `4` | job-processing threads per worker |
+| `PULSECHECK_APP_BASE_URL` | `http://localhost:8080` | where links in emails point; must be localhost with the `logging` provider |
+| `PULSECHECK_EMAIL_PROVIDER` | `logging` | `logging` (write emails to the worker log) or `resend` |
+| `RESEND_API_KEY` | *(empty)* | required with `resend` |
+| `EMAIL_FROM` | `PulseCheck <onboarding@resend.dev>` | sender; must be on a domain verified in Resend to reach anyone but yourself |
 
 **Worker (`worker.*`)**
 
