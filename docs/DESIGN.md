@@ -461,3 +461,40 @@ runs while a transaction is active.
   `import.meta.env.DEV`, which the production build replaces with `false`, so the page is not in the
   bundle (checked after building).
 - **No source maps in the production build**: they would ship about 1.7 MB of source inside the jar.
+
+### Web app: API client, auth state and layout
+
+- **One API client** (`web/src/api/client.ts`); nothing else calls `fetch`. Every request sends
+  `credentials: "include"`. Before each `POST`/`PATCH`/`PUT`/`DELETE` it reads the `XSRF-TOKEN` cookie *at
+  that moment* and sends it as `X-XSRF-TOKEN`, so the token rotation at login and logout needs no
+  bookkeeping. The app also calls `GET /api/auth/csrf` on start-up and after logout (and the login page
+  will after login), as DESIGN's CSRF section asks. If the cookie is missing anyway, the client fetches
+  one first; a 403 whose detail mentions CSRF (e.g. the cookie was cleared mid-session) gets one fresh
+  token and one retry. Other 403s ("Your password is incorrect") are never retried.
+- **Not every 401 means "session expired".** Login answers a wrong password with 401, and `GET
+  /api/auth/me` answers "not logged in" with 401. Callers say so with `on401: "error"`; every other 401
+  ends the session in the app: the cached user is set to `null` and every other cached query is removed
+  (no private data stays in memory), and the route guard sends the user to `/login?next=<page>` with
+  "Your session has ended. Please log in again." A logout that gets 401 counts as a successful logout.
+- **Why the guard decides the redirect, not the API client.** Two things react to an ended session: the
+  cached user turning `null`, and a navigation. If both triggered navigations they would race (e.g. a
+  voluntary logout being redirected to `/login?next=/dashboard`). Instead, `auth/session.ts` records *why*
+  the session ended (`expired` or `logged-out`) and `RequireAuth` is the only place that redirects,
+  choosing the target and message from that reason. The login page clears the reason.
+- **`?next=` survives a reload** (unlike router state) and is checked by `safeNextPath`: only paths
+  starting with a single `/` are accepted, so `//evil.example` or `/\evil.example`, which browsers treat as
+  another site, cannot turn the login page into an open redirect.
+- **Error messages:** the backend's `detail` is shown when it is written for people (most are, e.g. "This
+  link is invalid or has expired. Please request a new one."). Details that look technical (CSRF
+  instructions, "Request validation failed", framework messages) are replaced by a plain fallback for the
+  status, 5xx is always "Something went wrong on our side…", and a failed `fetch` is "We couldn't reach
+  PulseCheck…". 429 uses `Retry-After`: "Please try again in N seconds", or minutes from 90 seconds up
+  (resend-verification allows 3 per hour, so waits can be 20 minutes).
+- **Queries retry only what may pass on its own** (network errors, 5xx; twice). 4xx answers and mutations
+  are never retried automatically.
+- **Layout:** a skip link, the header (logo, account menu) and, for unverified users, a "Please verify
+  your email" banner with "Resend link" on every logged-in page. The account menu is a disclosure
+  (`aria-expanded` button and a panel) rather than an ARIA `menu`, which would oblige full arrow-key menu
+  semantics for two items; it closes on Escape (returning focus to the button) and on outside clicks.
+  Each page sets the tab title (`usePageTitle`), the first thing screen readers announce after
+  navigation.
