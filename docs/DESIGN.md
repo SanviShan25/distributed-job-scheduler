@@ -416,3 +416,48 @@ runs while a transaction is active.
 - **Confirmation email limits**: 10 per account per hour and 3 per address per day across all accounts, as Redis
   buckets (so deleting and re-adding a recipient doesn't reset them). Unlike the login limits, these **fail closed**
   (503) if Redis is down, since the emails go to people who never signed up.
+
+### Web app: scaffold and design system (`web/`)
+
+- **Stack:** React 19 + TypeScript (strict, plus `noUncheckedIndexedAccess`) + Vite 8, Tailwind CSS 4,
+  React Router 8, TanStack Query 5, ESLint 10 (typescript-eslint `strictTypeChecked`) + Prettier, Vitest 5 +
+  Testing Library.
+- **Dependency versions are at least two weeks old, including transitive ones.** Direct dependencies are
+  pinned exactly (`web/.npmrc` has `save-exact=true`), and installs were run with
+  `npm install --before=<today minus 14 days>` so npm also resolves every transitive dependency to a version
+  published before that date. Exceptions to "latest":
+  - **TypeScript 6.0, not 7.** TypeScript 7 is the native (Go) compiler; typescript-eslint supports only
+    TypeScript < 6.1 so far.
+  - **jsdom 29, not 31.** jsdom 30+ require Node ≥ 24.15, and older Node 24 releases are still common locally.
+  - **No `eslint-plugin-jsx-a11y`.** Its latest release supports ESLint ≤ 9. Accessibility is checked by the
+    tests instead: they find elements by role and accessible name (`getByRole`, `getByLabelText`), so an
+    unlabelled control fails its test.
+  - **`overrides: { minimatch: "11.0.5" }`** fixes a moderate ReDoS advisory (GHSA-g3hv-75wg-m249) in
+    ESLint's and typescript-eslint's dependency (dev tooling only). The upstream fix, typescript-eslint
+    8.74, is too new; remove the override once it can be upgraded.
+- **Dev proxy instead of CORS.** `npm run dev` serves on :5173 and Vite forwards `/api` to :8080, keeping
+  the browser's `Host` (`changeOrigin: false`). The browser sees one origin, so the session and
+  `XSRF-TOKEN` cookies are first-party and the CSRF flow is identical to production, where Spring Boot
+  serves the built app. The backend needs no CORS configuration at all.
+- **Colours:** the brand colour is indigo, deliberately neither green nor red, so a button or link is
+  never mistaken for a status. Status colours (UP green-700, DOWN red-700, UNKNOWN/PAUSED slate) are
+  never the only signal: `StatusBadge` always shows a word and an icon with a different *shape* per
+  status (check-circle, warning triangle, question-circle, pause-circle), which works for colour-blind
+  users and in greyscale. Every text colour is at least 4.5:1 on its background; input borders use
+  `line-strong` (4.8:1) because WCAG 1.4.11 requires 3:1 for the edges of form controls, which the usual
+  light-grey border does not meet.
+- **System fonts**, no web font: nothing to download, no third-party request (simpler Content Security
+  Policy later), and text looks native on every device.
+- **Accessibility details:** 44 px minimum touch targets; 16 px input text (iOS Safari zooms into
+  smaller inputs); one `:focus-visible` outline for every control; animations off under
+  `prefers-reduced-motion`. Input hints sit between the label and the field (read before typing) and,
+  like errors, are linked with `aria-describedby`; invalid fields get `aria-invalid`. `Alert` uses
+  `role="alert"` for errors and warnings and `role="status"` for info and success.
+- **A loading `Button` stays enabled** and uses `aria-disabled` + `aria-busy` instead of `disabled`: a
+  disabled button drops keyboard focus to the page body mid-submit. Its click handler cancels the
+  event while loading, which also blocks a double submit from pressing Enter in a field (browsers turn
+  that into a click on the submit button).
+- **`/styleguide`** shows every token and component, in development only: the route sits behind
+  `import.meta.env.DEV`, which the production build replaces with `false`, so the page is not in the
+  bundle (checked after building).
+- **No source maps in the production build**: they would ship about 1.7 MB of source inside the jar.
