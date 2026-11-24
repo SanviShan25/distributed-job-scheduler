@@ -72,12 +72,16 @@ public final class EmailTemplates {
         return WHEN.format(instant);
     }
 
-    /** "less than a minute", "1 minute", "12 minutes", "2 hours 5 minutes", "1 day 3 hours" */
+    /**
+     * "less than a minute" (under 30 s), else rounded to the nearest minute: "1 minute", "12 minutes",
+     * "2 hours 5 minutes", "1 day 3 hours".
+     */
     public static String formatDuration(java.time.Duration duration) {
-        long minutes = Math.max(0, duration.toMinutes());
-        if (minutes < 1) {
+        long seconds = Math.max(0, duration.toSeconds());
+        if (seconds < 30) {
             return "less than a minute";
         }
+        long minutes = (seconds + 30) / 60;
         long days = minutes / (24 * 60);
         long hours = (minutes / 60) % 24;
         long mins = minutes % 60;

@@ -53,9 +53,15 @@ class EmailTemplatesTest {
 
     @Test
     void downtimeIsWrittenInPlainWords() {
-        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(40))).isEqualTo("less than a minute");
-        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(61))).isEqualTo("1 minute");
-        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(12).plusSeconds(59))).isEqualTo("12 minutes");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ZERO)).isEqualTo("less than a minute");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(29))).isEqualTo("less than a minute");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(30))).isEqualTo("1 minute");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(89))).isEqualTo("1 minute");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofSeconds(90))).isEqualTo("2 minutes");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(3).plusMillis(59_980))).isEqualTo("4 minutes");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(12).plusSeconds(29))).isEqualTo("12 minutes");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(59).plusSeconds(30))).isEqualTo("1 hour");
+        assertThat(EmailTemplates.formatDuration(java.time.Duration.ofHours(23).plusMinutes(59).plusSeconds(45))).isEqualTo("1 day");
         assertThat(EmailTemplates.formatDuration(java.time.Duration.ofMinutes(125))).isEqualTo("2 hours 5 minutes");
         assertThat(EmailTemplates.formatDuration(java.time.Duration.ofHours(1))).isEqualTo("1 hour");
         assertThat(EmailTemplates.formatDuration(java.time.Duration.ofHours(27).plusMinutes(10))).isEqualTo("1 day 3 hours");
