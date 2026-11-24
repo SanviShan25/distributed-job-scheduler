@@ -1,5 +1,6 @@
-import { ChevronDown, CircleUser, LogOut } from "lucide-react";
+import { ChevronDown, CircleUser, LogOut, Settings } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { Link } from "react-router";
 import { useLogout } from "../../auth/user";
 import { cn } from "../../lib/cn";
 import { Spinner } from "../ui";
@@ -62,6 +63,18 @@ export function UserMenu({ email }: { email: string }) {
             <span className="block font-semibold break-all text-ink">{email}</span>
           </p>
           <ul className="pt-2">
+            <li>
+              <Link
+                to="/settings/account"
+                onClick={() => {
+                  setOpen(false);
+                }}
+                className="flex min-h-11 w-full items-center gap-3 px-4 font-medium text-ink hover:bg-canvas"
+              >
+                <Settings aria-hidden="true" className="size-5 text-ink-muted" />
+                Account settings
+              </Link>
+            </li>
             <li>
               <button
                 type="button"

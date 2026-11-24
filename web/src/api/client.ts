@@ -176,8 +176,12 @@ async function readProblem(response: Response): Promise<ProblemDetail> {
   }
 }
 
+/**
+ * Only the backend's CSRF rejection ("Missing or invalid CSRF token: …") is worth a fresh token and a
+ * retry. Every other 403 (wrong password, email not verified) is a real answer and is never retried.
+ */
 function isCsrfProblem(problem: ProblemDetail): boolean {
-  return /csrf/i.test(problem.detail ?? "");
+  return /csrf token/i.test(problem.detail ?? "");
 }
 
 function networkError(): ApiError {
@@ -186,6 +190,15 @@ function networkError(): ApiError {
     0,
   );
 }
+
+/**
+ * Errors identified by their ProblemDetail title whose detail is aimed at API users (it names
+ * endpoints), with the wording to show instead.
+ */
+const MESSAGES_BY_TITLE: Record<string, string> = {
+  "Email not verified":
+    "Please verify your email address first. Check your inbox for the link, or use “Resend link” above.",
+};
 
 const FALLBACK_MESSAGES: Record<number, string> = {
   400: "Please check your details and try again.",
@@ -225,6 +238,15 @@ function toApiError(response: Response, problem: ProblemDetail): ApiError {
   const fieldErrors = Object.fromEntries(
     (problem.errors ?? []).map(({ field, message }) => [field, message]),
   );
+  if (status === 403 && isCsrfProblem(problem)) {
+    return new ApiError("Your page is out of date. Please reload the page and try again.", status, {
+      fieldErrors,
+    });
+  }
+
+  const byTitle = problem.title === undefined ? undefined : MESSAGES_BY_TITLE[problem.title];
+  if (byTitle !== undefined) return new ApiError(byTitle, status, { fieldErrors });
+
   const detail = problem.detail?.trim();
   const message =
     detail && detail.length <= 300 && !TECHNICAL_DETAIL.test(detail)

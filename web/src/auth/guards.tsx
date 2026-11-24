@@ -19,6 +19,9 @@ export function RequireAuth() {
     if (endReason === "logged-out") {
       return <Navigate to="/login" replace state={{ loggedOut: true }} />;
     }
+    if (endReason === "account-deleted") {
+      return <Navigate to="/login" replace state={{ accountDeleted: true }} />;
+    }
     const here = location.pathname + location.search + location.hash;
     return (
       <Navigate

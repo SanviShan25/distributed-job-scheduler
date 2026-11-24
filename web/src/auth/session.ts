@@ -4,8 +4,9 @@
  * - "expired": an API call answered 401, so the session ended on the server (idle timeout, password
  *   reset elsewhere, account deleted). The user is sent to log in and then back to the same page.
  * - "logged-out": the user chose to log out. They go to the login page without a "next" page.
+ * - "account-deleted": the user deleted their account. Like "logged-out", with its own message.
  */
-export type SessionEndReason = "expired" | "logged-out" | null;
+export type SessionEndReason = "expired" | "logged-out" | "account-deleted" | null;
 
 let reason: SessionEndReason = null;
 const listeners = new Set<() => void>();

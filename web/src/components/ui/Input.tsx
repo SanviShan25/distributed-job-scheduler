@@ -10,6 +10,8 @@ export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   error?: string | undefined;
   /** Adds "(optional)" to the label; fields are treated as required otherwise. */
   optional?: boolean;
+  /** A control shown inside the field on the right, e.g. a "show password" button. */
+  trailing?: ReactNode;
   ref?: Ref<HTMLInputElement>;
 }
 
@@ -18,6 +20,7 @@ export function Input({
   hint,
   error,
   optional = false,
+  trailing,
   id,
   className,
   ...rest
@@ -39,19 +42,25 @@ export function Input({
           {hint}
         </div>
       )}
-      <input
-        id={inputId}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={describedBy || undefined}
-        className={cn(
-          // text-base (16px) also stops iOS Safari from zooming in on focus.
-          "block min-h-11 w-full rounded-lg border bg-surface px-3.5 py-2 text-base text-ink shadow-sm",
-          "placeholder:text-ink-muted/70 disabled:cursor-not-allowed disabled:bg-unknown-50",
-          error ? "border-down-700 ring-1 ring-down-700" : "border-line-strong",
-          className,
+      <div className="relative">
+        <input
+          id={inputId}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={describedBy || undefined}
+          className={cn(
+            // text-base (16px) also stops iOS Safari from zooming in on focus.
+            "block min-h-11 w-full rounded-lg border bg-surface px-3.5 py-2 text-base text-ink shadow-sm",
+            "placeholder:text-ink-muted/70 disabled:cursor-not-allowed disabled:bg-unknown-50",
+            error ? "border-down-700 ring-1 ring-down-700" : "border-line-strong",
+            trailing ? "pr-12" : undefined,
+            className,
+          )}
+          {...rest}
+        />
+        {trailing && (
+          <div className="absolute inset-y-0 right-0 flex items-center pr-1">{trailing}</div>
         )}
-        {...rest}
-      />
+      </div>
       {error && (
         <p id={errorId} className="flex items-start gap-1.5 text-sm font-medium text-down-700">
           <CircleX aria-hidden="true" className="mt-0.5 size-4 shrink-0" />

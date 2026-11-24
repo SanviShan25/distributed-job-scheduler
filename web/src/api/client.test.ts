@@ -78,6 +78,48 @@ describe("API client: cookies and CSRF", () => {
   });
 });
 
+describe("API client: CSRF retry is only for CSRF rejections", () => {
+  it("does not retry a 403 for an unverified email, and explains it plainly", async () => {
+    setCookie("XSRF-TOKEN", "valid");
+    const backend = fakeBackend({
+      "POST /api/monitors": () =>
+        new Response(
+          JSON.stringify({
+            type: "about:blank",
+            title: "Email not verified",
+            status: 403,
+            detail:
+              "Please verify your email address before creating monitors. Check your inbox for the link, or request a new one (POST /api/auth/resend-verification).",
+          }),
+          { status: 403, headers: { "Content-Type": "application/problem+json" } },
+        ),
+    });
+
+    const error = await failure(api.post("/api/monitors", { name: "Shop" }));
+
+    expect(backend.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["POST /api/monitors"]);
+    expect(error.status).toBe(403);
+    expect(error.message).toBe(
+      "Please verify your email address first. Check your inbox for the link, or use “Resend link” above.",
+    );
+    expect(error.message).not.toMatch(/\/api\//);
+  });
+
+  it("retries a CSRF rejection only once", async () => {
+    setCookie("XSRF-TOKEN", "t");
+    const backend = fakeBackend({
+      "POST /api/thing": () =>
+        problem(403, "Missing or invalid CSRF token: call GET /api/auth/csrf …"),
+    });
+
+    const error = await failure(api.post("/api/thing"));
+
+    expect(backend.requests.map((r) => r.method)).toEqual(["POST", "GET", "POST"]);
+    expect(error.status).toBe(403);
+    expect(error.message).toBe("Your page is out of date. Please reload the page and try again.");
+  });
+});
+
 describe("API client: errors in plain English", () => {
   it("shows the backend's message when it is written for people", async () => {
     setCookie("XSRF-TOKEN", "t");

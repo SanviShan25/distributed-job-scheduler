@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
+import { StrictMode } from "react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import type { User } from "../auth/user";
 import { createQueryClient } from "../lib/queryClient";
@@ -10,10 +11,14 @@ import { json, problem, type Handler } from "./fakeBackend";
 export function renderApp(path: string) {
   const queryClient = createQueryClient();
   const router = createMemoryRouter(routes, { initialEntries: [path] });
+  // StrictMode like main.tsx, so effects run twice as in development (e.g. a one-time token must
+  // still be sent only once).
   const view = render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </StrictMode>,
   );
   const location = () =>
     router.state.location.pathname + router.state.location.search + router.state.location.hash;

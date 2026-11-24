@@ -498,3 +498,46 @@ runs while a transaction is active.
   semantics for two items; it closes on Escape (returning focus to the button) and on outside clicks.
   Each page sets the tab title (`usePageTitle`), the first thing screen readers announce after
   navigation.
+
+### Web app: account pages
+
+- **Routes:** `/`, `/login`, `/signup` are for logged-out users (logged-in users go on to `?next=` or the
+  dashboard). `/check-inbox`, `/verify-email`, `/forgot-password` and `/reset-password` work either way:
+  an email link may be opened on a device where someone else, or nobody, is logged in. `/dashboard` and
+  `/settings/account` need a login.
+- **Client checks mirror the backend exactly:** password length 10–128 counted with JavaScript's
+  `.length`, which, like Java's `String.length()`, counts UTF-16 units (so an emoji counts as 2 on both
+  sides), and the same email pattern as `EmailAddresses`, applied to the trimmed, lower-cased address.
+  The rule is shown as the password field's hint (read before typing) with a live character count. Login
+  only checks that a password was entered: it must not hint at the rules for existing passwords.
+- **No "confirm password" fields;** every password field has a "Show password" toggle instead
+  (`aria-pressed`, constant label). It is one field fewer for people to fill in, and a mistyped new
+  password is recoverable through "Forgot your password?".
+- **Same wording as the API, never revealing whether an email has an account:** sign-up always goes to
+  "Check your inbox" with the address entered; forgot-password always says "If there is an account for
+  …". Login shows the backend's "Invalid email or password".
+- **Email-link tokens:** the page reads `?token=` once into component state and immediately replaces
+  the history entry with the same path without the query (`navigate(..., { replace: true })`, which is
+  `history.replaceState`), so the token is not kept in the browser history or visible in the address
+  bar. `index.html` also sets `<meta name="referrer" content="no-referrer">` (the server header comes
+  with serving the app from Spring Boot).
+- **The verification token is sent exactly once,** guarded by a ref: tokens are single-use, and React's
+  development StrictMode runs effects twice, which would otherwise turn a success into "link already
+  used". The tests render the app in StrictMode to cover this. "Try again" after a network error resends
+  the same (still unused) token.
+- **Expired/used links** (the backend's 400 "This link is invalid or has expired…") get their own state
+  with the next step: verification → "Request a new link" if logged in, otherwise "Log in to request a
+  new link" (the banner there has "Resend link"); reset → "Request a new link" (`/forgot-password`). A
+  reset password the backend rejects is shown on the field instead, since the backend validates the
+  password before using the token, so the link still works.
+- **After a password reset** the app forgets any logged-in user: the backend has just ended every
+  session of that account, possibly including this browser's.
+- **Wrong current password (403) is a field error,** not a logout; the API client only treats 401 as
+  an ended session.
+- **Delete account** needs the word DELETE typed (case-insensitive) plus the password. Afterwards the
+  session-end reason `account-deleted` sends the user to the login page with "Your account and all its
+  data have been deleted."
+- **Errors identified by title:** "Email not verified" (403, creating a monitor) has a detail aimed at
+  API users that names an endpoint, so the client shows its own wording for that title. A CSRF rejection
+  that survives the one retry says "Your page is out of date. Please reload the page and try again."
+  rather than "You don't have permission".
