@@ -21,7 +21,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.api.PageResponse;
+import com.sanvi.jobscheduler.pulsecheck.alert.AlertRecipientService;
 import com.sanvi.jobscheduler.pulsecheck.domain.CheckResult;
 import com.sanvi.jobscheduler.pulsecheck.domain.Incident;
 import com.sanvi.jobscheduler.pulsecheck.domain.Monitor;
@@ -47,20 +49,34 @@ import lombok.RequiredArgsConstructor;
 public class MonitorController {
     private final MonitorService monitors;
     private final CurrentUser currentUser;
+    private final AlertRecipientService recipients;
 
     public record CreateMonitorRequest(
         @NotBlank @Size(max = 200) String name,
         @NotBlank @Size(max = 2048) String url,
         /* One of 60, 300, 900, 3600. */
         @NotNull Integer intervalSeconds,
-        @Size(max = MonitorService.MAX_ALERT_EMAILS) List<String> alertEmails) {}
+        /* Email alerts to the account's own address (default true). */
+        Boolean notifyOwner,
+        /* Replaced by /api/monitors/{id}/recipients; rejected if present so it is not silently ignored. */
+        Object alertEmails) {}
 
     /** All fields optional. */
     public record UpdateMonitorRequest(
         @Size(min = 1, max = 200) String name,
         @Size(min = 1, max = 2048) String url,
         Integer intervalSeconds,
-        @Size(max = MonitorService.MAX_ALERT_EMAILS) List<String> alertEmails) {}
+        Boolean notifyOwner,
+        Object alertEmails) {}
+
+    public record AddRecipientRequest(@NotBlank @Size(max = 320) String email) {}
+
+    public record RecipientView(UUID id, String email, AlertRecipientService.Status status, Instant createdAt,
+        Instant confirmedAt, Instant unsubscribedAt) {
+        static RecipientView of(AlertRecipientService.Recipient r) {
+            return new RecipientView(r.id(), r.email(), r.status(), r.createdAt(), r.confirmedAt(), r.unsubscribedAt());
+        }
+    }
 
     public record UptimeView(Double last24h, Double last7d, Double last30d, Integer avgResponseMs24h, Long checks24h) {
         static UptimeView of(CheckResultRepository.UptimeStats s) {
@@ -70,13 +86,24 @@ public class MonitorController {
     }
 
     public record MonitorView(UUID id, String name, String url, int intervalSeconds, boolean enabled,
-        MonitorStatus status, int consecutiveFailures, Instant lastCheckedAt, List<String> alertEmails,
-        Instant createdAt, Instant updatedAt, UptimeView uptime) {
+        MonitorStatus status, int consecutiveFailures, Instant lastCheckedAt, boolean notifyOwner,
+        List<RecipientView> recipients, Instant createdAt, Instant updatedAt, UptimeView uptime) {
 
-        static MonitorView of(Monitor m, UptimeView uptime) {
+        static MonitorView of(Monitor m, List<AlertRecipientService.Recipient> recipients, UptimeView uptime) {
             return new MonitorView(m.getId(), m.getName(), m.getUrl(), m.getIntervalSeconds(), m.isEnabled(),
-                m.getCurrentStatus(), m.getConsecutiveFailures(), m.getLastCheckedAt(),
-                MonitorService.splitEmails(m.getAlertEmails()), m.getCreatedAt(), m.getUpdatedAt(), uptime);
+                m.getCurrentStatus(), m.getConsecutiveFailures(), m.getLastCheckedAt(), m.isNotifyOwner(),
+                recipients.stream().map(RecipientView::of).toList(), m.getCreatedAt(), m.getUpdatedAt(), uptime);
+        }
+    }
+
+    private MonitorView view(Monitor m, UptimeView uptime) {
+        return MonitorView.of(m, recipients.list(m.getId()), uptime);
+    }
+
+    private static void rejectAlertEmails(Object alertEmails) {
+        if (alertEmails != null) {
+            throw ApiProblems.badRequest("alertEmails is no longer supported: add recipients with "
+                + "POST /api/monitors/{id}/recipients (each one must confirm by email)");
         }
     }
 
@@ -97,44 +124,69 @@ public class MonitorController {
 
     @PostMapping
     public ResponseEntity<MonitorView> create(@RequestBody @Valid CreateMonitorRequest request) {
+        rejectAlertEmails(request.alertEmails());
         Monitor created = monitors.create(currentUser.id(), new MonitorService.MonitorChanges(
-            request.name(), request.url(), request.intervalSeconds(), request.alertEmails()));
+            request.name(), request.url(), request.intervalSeconds(), request.notifyOwner()));
         return ResponseEntity.created(URI.create("/api/monitors/" + created.getId()))
-            .body(MonitorView.of(created, null));
+            .body(view(created, null));
     }
 
     @GetMapping
     public List<MonitorView> list() {
-        return monitors.list(currentUser.id()).stream().map(m -> MonitorView.of(m, null)).toList();
+        List<Monitor> mine = monitors.list(currentUser.id());
+        var byMonitor = recipients.listFor(mine.stream().map(Monitor::getId).toList());
+        return mine.stream().map(m -> MonitorView.of(m, byMonitor.getOrDefault(m.getId(), List.of()), null)).toList();
     }
 
     /** Includes the uptime summary (24 h / 7 d / 30 d and average response time). */
     @GetMapping("/{id}")
     public MonitorView get(@PathVariable UUID id) {
         Monitor monitor = monitors.get(currentUser.id(), id);
-        return MonitorView.of(monitor, UptimeView.of(monitors.uptime(id)));
+        return view(monitor, UptimeView.of(monitors.uptime(id)));
     }
 
     @PatchMapping("/{id}")
     public MonitorView update(@PathVariable UUID id, @RequestBody @Valid UpdateMonitorRequest request) {
+        rejectAlertEmails(request.alertEmails());
         Monitor updated = monitors.update(currentUser.id(), id, new MonitorService.MonitorChanges(
-            request.name(), request.url(), request.intervalSeconds(), request.alertEmails()));
-        return MonitorView.of(updated, null);
+            request.name(), request.url(), request.intervalSeconds(), request.notifyOwner()));
+        return view(updated, null);
     }
 
     @PostMapping("/{id}/pause")
     public MonitorView pause(@PathVariable UUID id) {
-        return MonitorView.of(monitors.pause(currentUser.id(), id), null);
+        return view(monitors.pause(currentUser.id(), id), null);
     }
 
     @PostMapping("/{id}/resume")
     public MonitorView resume(@PathVariable UUID id) {
-        return MonitorView.of(monitors.resume(currentUser.id(), id), null);
+        return view(monitors.resume(currentUser.id(), id), null);
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable UUID id) {
         monitors.delete(currentUser.id(), id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ------------------------------------------------------------------ extra alert recipients
+
+    /** Adds a PENDING recipient and emails them a confirmation link; they get alerts once they confirm. */
+    @PostMapping("/{id}/recipients")
+    public ResponseEntity<RecipientView> addRecipient(@PathVariable UUID id,
+            @RequestBody @Valid AddRecipientRequest request) {
+        RecipientView added = RecipientView.of(recipients.add(currentUser.id(), id, request.email()));
+        return ResponseEntity.created(URI.create("/api/monitors/" + id + "/recipients/" + added.id())).body(added);
+    }
+
+    @PostMapping("/{id}/recipients/{recipientId}/resend")
+    public RecipientView resendConfirmation(@PathVariable UUID id, @PathVariable UUID recipientId) {
+        return RecipientView.of(recipients.resendConfirmation(currentUser.id(), id, recipientId));
+    }
+
+    @DeleteMapping("/{id}/recipients/{recipientId}")
+    public ResponseEntity<Void> removeRecipient(@PathVariable UUID id, @PathVariable UUID recipientId) {
+        recipients.remove(currentUser.id(), id, recipientId);
         return ResponseEntity.noContent().build();
     }
 

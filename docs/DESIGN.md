@@ -16,7 +16,7 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   result's id in advance.
 - **`alert_emails` is a comma-separated `TEXT` column** rather than a `text[]` or a child table. It is
   write-rarely, read-whole, and not queried by individual address yet; a child table can replace it
-  if per-recipient settings appear.
+  if per-recipient settings appear. (It did: V11 replaced it with `alert_recipients`, see below.)
 - **History is deleted with the monitor** (`ON DELETE CASCADE` on `check_results` and `incidents`).
   A deleted monitor's history has no owner-facing view, and keeping orphaned rows would only grow the
   retention job's work.
@@ -262,3 +262,157 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   their monitors (cascade) and those monitors' schedules. Nobody could log in as them, but a password
   reset could have claimed one.
 - **docker-compose runs the API with only the `api` profile** again.
+
+### Sending email through Resend
+
+- **Provider switch:** `pulsecheck.email.provider` is `logging` (default: local development and tests)
+  or `resend`. One factory method (`EmailSenderConfig`) creates the sender and refuses to start when:
+  - the provider is `logging` and `pulsecheck.app.base-url` is not a localhost URL. The logging sender
+    writes working verification and reset links to the log, so it must never serve real users. The host
+    is parsed, not string-matched, so `https://localhost.evil.example.com` does not pass;
+  - the provider is `resend` without `RESEND_API_KEY` or without `EMAIL_FROM`.
+- **`pulsecheck.app.base-url` replaces `pulsecheck.email.app-base-url`** (same `PULSECHECK_APP_BASE_URL`
+  variable). It is where the web app lives, used for every link, not only email links.
+- **Error classification** (`EmailSendException.isRetryable()`): 429, 5xx, 409 (Resend's "concurrent
+  request with the same idempotency key"), timeouts and network errors are retryable; any other 4xx
+  (validation error, unverified sender domain, bad API key) is not, because the same request would fail
+  the same way. Non-retryable failures are logged at ERROR because they usually mean a configuration
+  problem. The API key never appears in errors or logs, and email content is never logged by the Resend
+  sender (it may contain one-time links).
+- **No HTTP-level retries in the sender** (`retryOnConnectionFailure(false)`): retrying is the job
+  scheduler's job, with backoff (next step). The email's idempotency key is passed as Resend's
+  `Idempotency-Key` header, so a retry after an ambiguous failure (e.g. a timeout after Resend accepted
+  the email) does not deliver it twice.
+- **Templates:** every email has a plain-text and an HTML part built from the same content (heading,
+  short paragraphs, one button, the same link as plain text under it). The HTML is a single centred
+  table with inline CSS only (Gmail drops `<style>` blocks in many contexts), system fonts, a light
+  background and no images. All dynamic text is HTML-escaped.
+- **Interim:** emails are still sent inside the HTTP request in this step; a provider failure is
+  logged instead of failing sign-up or forgot-password. The next step moves sending to the job
+  scheduler.
+- **Configuration:** `PULSECHECK_EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM` and
+  `PULSECHECK_APP_BASE_URL` are passed to both the API and the workers (workers send emails from the
+  next step on); placeholders are in `.env.example`.
+
+### Emails as `SEND_EMAIL` jobs (V9)
+
+- **Emails are jobs.** Sign-up, resend-verification, forgot-password and the "you already have an
+  account" notice queue a `SEND_EMAIL` job; workers send it with the scheduler's retries and backoff
+  (8 attempts, exponential backoff with jitter, capped by `worker.max-backoff-seconds`). The HTTP request
+  never waits for Resend, so a slow or failing provider cannot slow down or break sign-up.
+- **The jobs table is the outbox.** The job row is inserted in the same transaction as what the email is
+  about (the new account and its token), and pushed to Redis after commit. A rollback means no email; a
+  commit means the email will go out even if the process dies a millisecond later (the drift sweeper
+  enqueues QUEUED rows Redis missed).
+- **Idempotency:** each email job has a unique `idempotency_key`, inserted with `ON CONFLICT DO NOTHING`,
+  and the worker passes the same key to Resend as `Idempotency-Key`. Keys:
+  `email:verify:{tokenId}`, `email:reset:{tokenId}`, and `email:already-registered:{userId}:{yyyyMMddHH}`
+  (so repeated sign-up attempts for an existing account produce at most one notice per hour).
+- **The payload is a template, not a rendered email:** `{template, to, params, idempotencyKey, secret}`.
+  The worker renders it at send time with the base URL from its own configuration. A one-time token
+  travels only in `secret`, which makes redaction a single, well-defined field.
+- **Redaction is a database trigger (V9).** Whenever a `SEND_EMAIL` job becomes SUCCEEDED, DEAD or
+  CANCELLED, `secret` is removed from its payload and `"secretRedacted": true` is added. A trigger rather
+  than application code because jobs reach terminal states through several paths (worker completion,
+  reaper recovery, the bulk "attempts exhausted" update, cancellation, a manual SQL fix) and every one of
+  them must redact. Only `SEND_EMAIL` payloads are touched. While a job is still pending or retrying it
+  keeps the token, because the worker needs it to build the link; `auth_tokens` only ever stores hashes.
+- **Consequences:** a finished email job cannot be re-sent by requeueing it. Its token is gone, so the
+  handler sends it straight to DEAD ("already redacted"); the user asks for a new link instead. Pending
+  email jobs (and their tokens) are visible through the scheduler's admin `/jobs` API, which requires the
+  operator API key.
+- **Failure handling:** retryable provider errors (429, 5xx, 409, timeouts) fail the job so it is retried;
+  non-retryable ones (validation errors, unverified domain, bad key) and unrenderable payloads throw
+  `NonRetryableJobException` and go straight to DEAD.
+- **Tests** deliver queued email jobs through the real `SendEmailJobHandler` before reading the test
+  inbox; a worker-profile end-to-end test runs real workers against a MockWebServer standing in for
+  Resend (503 then 200 → one delivery after a retry; 422 → DEAD after one attempt).
+
+### Keeping email payloads out of logs and errors
+
+An audit of every place a `SEND_EMAIL` payload (which may hold a one-time token) could surface:
+
+- **Worker logs and job errors:** `WorkerLoop` logs only ids and the failure message. `SendEmailJobHandler`
+  never puts the payload, a parser message, or a parser exception into its errors: a malformed payload
+  becomes `malformed SEND_EMAIL payload (<exception type>)` with no cause attached, because JSON parser
+  messages can quote the input, and failure messages become `last_error` and log lines.
+- **Postgres error details:** for constraint violations Postgres adds `DETAIL: Failing row contains (…)`
+  with the whole row, payload included, and pgjdbc copies it into exception messages by default. The
+  datasource sets `logServerErrorDetail=false`, so database exceptions (and any log line or 500 that
+  prints them) keep the constraint name but not row contents.
+- **Admin jobs API:** `/jobs`, `/jobs/{id}`, `/jobs/dead` etc. serialize a pending `SEND_EMAIL` job's
+  `secret` as `[redacted]` (finished jobs no longer contain it at all, see V9). Other job types are
+  unchanged.
+- **Unchanged by design:** `LoggingEmailSender` logs rendered emails including links. That is its
+  purpose, and it refuses to run unless the app is on localhost. Nothing else logs payloads: Reaper,
+  sweeper and worker log lines carry ids only, MDC holds jobId/workerId/attempt, Redis holds only job ids.
+
+### Password hashing outside transactions
+
+Argon2id is deliberately slow and memory-hard; doing it inside a database transaction would hold a pooled
+connection for the whole hash. Sign-up, reset-password, change-password and delete-account therefore hash
+or verify first and then run a short `TransactionTemplate` block that only touches the database; ending
+sessions (Redis) happens after commit. A test wraps the real encoder and fails if any hash or verification
+runs while a transaction is active.
+
+### DOWN/UP alert emails (V10)
+
+- **Same transaction as the incident.** `MonitorCheckService` opens or resolves the incident and calls
+  `AlertService` inside the same transaction (which holds the monitor's row lock); `AlertService` is
+  `Propagation.MANDATORY` so it cannot be called outside one. The alert's email job is written in that
+  transaction (the jobs table is the outbox), so an alert is never lost if the worker dies right after the
+  check, and never sent for a transition that rolled back. If Redis misses the enqueue, the sweeper
+  re-enqueues the QUEUED row.
+- **Exactly once per transition.** `alert_events` has one row per (incident, DOWN|UP), unique, recording
+  what was done (`SENT`, `PAUSED`, `SKIPPED`, `NO_RECIPIENT`). A transition that was already handled is
+  ignored, and the email job's idempotency key is `alert:{incidentId}:down|up`. Retried check jobs never
+  re-open an incident (the partial unique index), so they cannot cause a second alert either.
+- **Recipients:** the owner's account email, only if verified (otherwise `NO_RECIPIENT`, logged).
+- **Content:** site name and URL, times as "23 Nov 2026 at 14:05 UTC" (UTC with an explicit label, as
+  users have no time-zone setting yet), the cause from the failing check, a "View monitor" button linking to
+  `{app base URL}/monitors/{id}`, and for UP the downtime in words ("Back up after 12 minutes", measured from
+  the incident's start, i.e. the first failed check).
+- **Flapping cap: at most 6 alert emails per monitor in any rolling hour, counting the pause note.** The
+  first 5 transitions in an hour get their alerts; the 6th gets an "alerts paused for this monitor for an
+  hour" note *instead of* its alert; later transitions are skipped (recorded as `SKIPPED` and logged) until
+  an hour after the note. Counting uses `alert_events` and the database clock; decisions are serialized by
+  the monitor row lock. Configurable as `pulsecheck.alerts.max-emails-per-monitor-per-hour`.
+- **Changing a monitor's URL** resolves its open incident without an UP alert: it says nothing about
+  whether the old site recovered.
+
+### Extra alert recipients with double opt-in (V11)
+
+- **`alert_recipients` replaces `monitors.alert_emails`.** Each row is one address for one monitor with a status:
+  `PENDING` (added by the owner, gets only the confirmation email), `CONFIRMED` (clicked the link, gets alerts)
+  or `UNSUBSCRIBED`. Existing `alert_emails` were copied as `PENDING` (at most 5, never the owner's own address)
+  because nobody had opted in; the owner can send them a confirmation with the resend endpoint. The API rejects
+  the old `alertEmails` field instead of silently ignoring it.
+- **API:** monitors show `notifyOwner` and `recipients` (id, email, status, timestamps).
+  `POST /api/monitors/{id}/recipients` adds one, `POST .../recipients/{rid}/resend` sends a new confirmation
+  (the old link stops working), `DELETE .../recipients/{rid}` removes one. Max 5 `PENDING` + `CONFIRMED` per
+  monitor (unsubscribed rows are kept so the owner sees who left, and do not count); the monitor row is locked
+  while adding so concurrent requests cannot exceed it. Re-adding an unsubscribed address makes it `PENDING`
+  again: they must opt in again.
+- **Tokens** live in `alert_recipient_tokens`: SHA-256 only, single-use (`used_at`, consumed atomically).
+  Confirmation links expire after 72 h. Unsubscribe links do not expire (people unsubscribe from old emails),
+  and **each alert email gets its own token**, minted when the alert is queued and carried in the job's `secret`
+  (redacted by V9 once sent). Stored hashes can't be turned back into links, so a stable per-recipient token
+  would have to be stored reversibly; a token per email avoids that.
+- **Unsubscribe is per address, per monitor**, needs no login and is idempotent: using the same link again shows
+  "Unsubscribed" without changing anything. Because links are single-use, a link used before the recipient
+  re-subscribed no longer works (410). The owner can unsubscribe from one monitor too (their links have no
+  recipient id); that sets `monitors.notify_owner = false`, which they can turn back on with
+  `PATCH {"notifyOwner": true}`.
+- **Links never act on GET.** `/alert-recipients/confirm` and `/alert-recipients/unsubscribe` show a page with a
+  button that POSTs, because mail security scanners and link previews fetch links. Mail clients' own Unsubscribe
+  button uses RFC 8058: every alert has `List-Unsubscribe: <url>` and
+  `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, and the POST endpoint accepts that request. These two
+  paths have their own stateless security chain with CSRF off (the token is the credential; a one-click POST from
+  a mail provider can't carry a CSRF token), `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+- **Recipients of an alert:** the owner (verified, `notify_owner`) plus `CONFIRMED` recipients. One email job per
+  recipient: the owner's keeps the key `alert:{incidentId}:down|up`, others append `:{recipientId}`, so a bad
+  address can't delay or fail the others' alerts. The flapping cap is per monitor, so each recipient gets at most
+  6 alert emails an hour.
+- **Confirmation email limits**: 10 per account per hour and 3 per address per day across all accounts, as Redis
+  buckets (so deleting and re-adding a recipient doesn't reset them). Unlike the login limits, these **fail closed**
+  (503) if Redis is down, since the emails go to people who never signed up.

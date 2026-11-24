@@ -24,8 +24,8 @@ public class Monitor {
     private String url;
     private int intervalSeconds;
     private boolean enabled;
-    /** Comma-separated; used once alerting exists. */
-    private String alertEmails;
+    /** False once the owner used an unsubscribe link for this monitor's alerts. */
+    private boolean notifyOwner = true;
     @Enumerated(EnumType.STRING) private MonitorStatus currentStatus;
     private int consecutiveFailures;
     private Instant lastCheckedAt;

@@ -1,8 +1,6 @@
 package com.sanvi.jobscheduler.pulsecheck.api;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
@@ -54,7 +52,6 @@ import lombok.extern.slf4j.Slf4j;
 public class MonitorService {
     static final int CHECK_TIMEOUT_SECONDS = 30;
     static final int CHECK_MAX_ATTEMPTS = 3;
-    static final int MAX_ALERT_EMAILS = 10;
 
     private final MonitorRepository monitors;
     private final AppUserRepository users;
@@ -66,7 +63,7 @@ public class MonitorService {
     private final UrlSafetyValidator urlValidator;
     private final PulseCheckProperties props;
 
-    public record MonitorChanges(String name, String url, Integer intervalSeconds, List<String> alertEmails) {}
+    public record MonitorChanges(String name, String url, Integer intervalSeconds, Boolean notifyOwner) {}
 
     @Transactional
     public Monitor create(UUID userId, MonitorChanges request) {
@@ -94,7 +91,7 @@ public class MonitorService {
         monitor.setName(validName(request.name()));
         monitor.setUrl(url);
         monitor.setIntervalSeconds(interval);
-        monitor.setAlertEmails(joinEmails(request.alertEmails()));
+        monitor.setNotifyOwner(request.notifyOwner() == null || request.notifyOwner());
         monitor.setEnabled(true);
         monitor.setCurrentStatus(MonitorStatus.UNKNOWN);
         monitor.setCreatedAt(now);
@@ -130,8 +127,8 @@ public class MonitorService {
         if (changes.name() != null) {
             monitor.setName(validName(changes.name()));
         }
-        if (changes.alertEmails() != null) {
-            monitor.setAlertEmails(joinEmails(changes.alertEmails()));
+        if (changes.notifyOwner() != null) {
+            monitor.setNotifyOwner(changes.notifyOwner());
         }
         boolean recheck = false;
         if (changes.url() != null) {
@@ -287,30 +284,6 @@ public class MonitorService {
             throw ApiProblems.badRequest("name is required");
         }
         return name.trim();
-    }
-
-    private static String joinEmails(List<String> emails) {
-        if (emails == null || emails.isEmpty()) {
-            return null;
-        }
-        List<String> cleaned = new ArrayList<>();
-        for (String email : emails) {
-            String trimmed = email == null ? "" : email.trim().toLowerCase();
-            if (!trimmed.matches("[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+")) {
-                throw ApiProblems.badRequest("Invalid alert email: " + email);
-            }
-            if (!cleaned.contains(trimmed)) {
-                cleaned.add(trimmed);
-            }
-        }
-        if (cleaned.size() > MAX_ALERT_EMAILS) {
-            throw ApiProblems.badRequest("At most " + MAX_ALERT_EMAILS + " alert emails");
-        }
-        return String.join(",", cleaned);
-    }
-
-    static List<String> splitEmails(String stored) {
-        return stored == null || stored.isBlank() ? List.of() : Arrays.asList(stored.split(","));
     }
 
     private static ScheduleService.ScheduleSpec cronChange(String cron) {

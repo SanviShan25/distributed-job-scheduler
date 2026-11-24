@@ -2,6 +2,9 @@ package com.sanvi.jobscheduler.pulsecheck.auth;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.context.annotation.Profile;
@@ -11,11 +14,13 @@ import org.springframework.web.ErrorResponseException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailProperties;
-import com.sanvi.jobscheduler.pulsecheck.email.EmailSender;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailJob;
+import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -35,21 +40,20 @@ public class AccountService {
     private final AppUserRepository users;
     private final AuthProtectionProperties protection;
     private final AuthTokenService tokens;
-    private final EmailSender emails;
-    private final EmailProperties emailProps;
+    private final EmailOutbox outbox;
+    private final TransactionTemplate tx;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
     public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
-            AuthProtectionProperties protection, AuthTokenService tokens, EmailSender emails,
-            EmailProperties emailProps) {
+            AuthProtectionProperties protection, AuthTokenService tokens, EmailOutbox outbox, TransactionTemplate tx) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
         this.protection = protection;
         this.tokens = tokens;
-        this.emails = emails;
-        this.emailProps = emailProps;
+        this.outbox = outbox;
+        this.tx = tx;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -60,6 +64,9 @@ public class AccountService {
      * Registers an account. If the email (case-insensitively) is already registered, nothing changes and
      * the caller gets exactly the same answer as for a new account, so sign-up cannot be used to find out
      * who has an account. The password is hashed in both cases so the two paths also take similar time.
+     * The password is hashed first, outside any transaction (Argon2 is deliberately slow and must not hold
+     * a database connection); then the account, its verification token and the email job are written in
+     * one short transaction. The email is sent by a worker afterwards.
      */
     public SignupResult signup(String rawEmail, String password) {
         String email = EmailAddresses.normalize(rawEmail);
@@ -69,6 +76,11 @@ public class AccountService {
         validatePassword(password);
 
         String hash = passwordEncoder.encode(password);
+        tx.executeWithoutResult(status -> createAccount(email, hash));
+        return new SignupResult(email, false);
+    }
+
+    private void createAccount(String email, String hash) {
         UUID id = UUID.randomUUID();
         int inserted = jdbc.update(
             "insert into users (id, email, password_hash, created_at, email_verified, failed_login_count) "
@@ -80,22 +92,25 @@ public class AccountService {
         } else {
             // Same API answer as a new account; only the real owner of the address learns about the attempt.
             log.info("Sign-up for an already registered email; no account created");
-            emails.send(new EmailSender.Email(email, "You already have a PulseCheck account",
-                "Someone (hopefully you) tried to sign up to PulseCheck with this email address, which already "
-                    + "has an account.\n\nForgot your password? Reset it here: "
-                    + emailProps.appBaseUrl() + "/forgot-password\n\nIf this wasn't you, you can ignore this email."));
+            UUID existing = jdbc.queryForObject("select id from users where lower(email) = lower(?)", UUID.class, email);
+            // At most one such notice per account per hour, however often someone tries.
+            String hour = DateTimeFormatter.ofPattern("yyyyMMddHH").withZone(ZoneOffset.UTC).format(Instant.now());
+            outbox.enqueue(new EmailJob(EmailJob.Template.ALREADY_REGISTERED, email, Map.of(),
+                "email:already-registered:" + existing + ":" + hour, null));
         }
-        return new SignupResult(email, false);
     }
 
-    /** Issues a fresh 24 h verification link (older links stop working) and emails it. */
+    /**
+     * Issues a fresh 24 h verification link (older links stop working) and queues the email, in one
+     * transaction. Idempotency key {@code email:verify:{tokenId}}.
+     */
+    @Transactional
     public void sendVerificationEmail(UUID userId, String email) {
-        String token = tokens.issue(userId, AuthTokenService.Purpose.EMAIL_VERIFICATION,
+        AuthTokenService.IssuedToken issued = tokens.issue(userId, AuthTokenService.Purpose.EMAIL_VERIFICATION,
             protection.verificationTokenTtl());
-        emails.send(new EmailSender.Email(email, "Verify your PulseCheck email address",
-            "Welcome to PulseCheck! Confirm your email address to start monitoring your websites:\n\n"
-                + emailProps.link("/verify-email", token)
-                + "\n\nThis link works once and expires in " + protection.verificationTokenTtl().toHours() + " hours."));
+        outbox.enqueue(new EmailJob(EmailJob.Template.VERIFY_EMAIL, email,
+            Map.of("ttlHours", String.valueOf(protection.verificationTokenTtl().toHours())),
+            "email:verify:" + issued.id(), issued.token()));
     }
 
     /**

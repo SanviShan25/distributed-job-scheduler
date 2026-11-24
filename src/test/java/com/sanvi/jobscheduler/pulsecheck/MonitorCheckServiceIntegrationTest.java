@@ -49,6 +49,7 @@ class MonitorCheckServiceIntegrationTest extends AbstractIntegrationTest {
     @Autowired IncidentRepository incidents;
     @Autowired PlatformTransactionManager txManager;
     @Autowired HttpCheckJobHandler beanHandler;
+    @Autowired com.sanvi.jobscheduler.pulsecheck.alert.AlertService alerts;
 
     private UUID userId;
 
@@ -76,7 +77,7 @@ class MonitorCheckServiceIntegrationTest extends AbstractIntegrationTest {
     }
 
     private MonitorCheckService service(SiteChecker checker) {
-        return new MonitorCheckService(monitors, results, incidents, checker, txManager);
+        return new MonitorCheckService(monitors, results, incidents, checker, txManager, alerts);
     }
 
     private Monitor monitor(MonitorStatus status, boolean enabled) {

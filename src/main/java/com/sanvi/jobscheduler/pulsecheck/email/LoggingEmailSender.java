@@ -1,19 +1,16 @@
 package com.sanvi.jobscheduler.pulsecheck.email;
 
-import org.springframework.stereotype.Component;
-
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Development stand-in: writes each email (including its link) to the application log instead of
- * sending it. The links contain live tokens, so this must not be used once real users exist; a real
- * provider replaces it behind {@link EmailSender}.
+ * Development stand-in: writes each email's plain-text part (including its links) to the application log
+ * instead of sending it. Those links are live one-time tokens, which is why {@link EmailSenderConfig}
+ * refuses to start with this sender unless the app runs on localhost.
  */
-@Component
 @Slf4j
 public class LoggingEmailSender implements EmailSender {
     @Override
     public void send(Email email) {
-        log.info("EMAIL to={} subject=\"{}\"\n{}", email.to(), email.subject(), email.body());
+        log.info("EMAIL to={} subject=\"{}\"\n{}", email.to(), email.subject(), email.text());
     }
 }
