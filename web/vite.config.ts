@@ -27,6 +27,8 @@ export default defineConfig({
     environment: "jsdom",
     environmentOptions: { jsdom: { url: "http://localhost:5173/" } },
     setupFiles: ["./src/test/setup.ts"],
+    // Several findBy* waits (up to 5 s each, see setup.ts) can happen in one test.
+    testTimeout: 20_000,
     css: false,
     restoreMocks: true,
     unstubGlobals: true,
