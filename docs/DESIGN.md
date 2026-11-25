@@ -165,7 +165,8 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   3. The token changes on login and logout. Reading the cookie per request handles this; an app that
      caches the token must call `GET /api/auth/csrf` again after login/logout.
   4. All requests need `credentials: "include"` (fetch) or `withCredentials: true` (Axios).
-  A missing or wrong token gets `403` with a message pointing to `GET /api/auth/csrf`.
+  A missing or wrong token gets `403` with a message pointing to `GET /api/auth/csrf` and
+  `"code": "csrf_invalid"`, which clients should check instead of the message text.
 - **Interim state:** `/api/monitors/**` now requires a logged-in user, but `CurrentUser` still resolves
   to the dev user until the next step switches it to the logged-in user.
 - **Testing note:** Spring Security's `csrf()` MockMvc helper permanently replaces the CSRF repository
@@ -416,3 +417,176 @@ runs while a transaction is active.
 - **Confirmation email limits**: 10 per account per hour and 3 per address per day across all accounts, as Redis
   buckets (so deleting and re-adding a recipient doesn't reset them). Unlike the login limits, these **fail closed**
   (503) if Redis is down, since the emails go to people who never signed up.
+
+### Web app: scaffold and design system (`web/`)
+
+- **Stack:** React 19 + TypeScript (strict, plus `noUncheckedIndexedAccess`) + Vite 8, Tailwind CSS 4,
+  React Router 8, TanStack Query 5, ESLint 10 (typescript-eslint `strictTypeChecked`) + Prettier, Vitest 5 +
+  Testing Library.
+- **Dependency versions are at least two weeks old, including transitive ones.** Direct dependencies are
+  pinned exactly (`web/.npmrc` has `save-exact=true`), and installs were run with
+  `npm install --before=<today minus 14 days>` so npm also resolves every transitive dependency to a version
+  published before that date. Exceptions to "latest":
+  - **TypeScript 6.0, not 7.** TypeScript 7 is the native (Go) compiler; typescript-eslint supports only
+    TypeScript < 6.1 so far.
+  - **jsdom 29, not 31.** jsdom 30+ require Node ≥ 24.15, and older Node 24 releases are still common locally.
+  - **No `eslint-plugin-jsx-a11y`.** Its latest release supports ESLint ≤ 9. Accessibility is checked by the
+    tests instead: they find elements by role and accessible name (`getByRole`, `getByLabelText`), so an
+    unlabelled control fails its test.
+  - **`overrides: { minimatch: "11.0.5" }`** fixes a moderate ReDoS advisory (GHSA-g3hv-75wg-m249) in
+    ESLint's and typescript-eslint's dependency (dev tooling only). The upstream fix, typescript-eslint
+    8.74, is too new; remove the override once it can be upgraded.
+- **Dev proxy instead of CORS.** `npm run dev` serves on :5173 and Vite forwards `/api` to :8080, keeping
+  the browser's `Host` (`changeOrigin: false`). The browser sees one origin, so the session and
+  `XSRF-TOKEN` cookies are first-party and the CSRF flow is identical to production, where Spring Boot
+  serves the built app. The backend needs no CORS configuration at all.
+- **Colours:** the brand colour is indigo, deliberately neither green nor red, so a button or link is
+  never mistaken for a status. Status colours (UP green-700, DOWN red-700, UNKNOWN/PAUSED slate) are
+  never the only signal: `StatusBadge` always shows a word and an icon with a different *shape* per
+  status (check-circle, warning triangle, question-circle, pause-circle), which works for colour-blind
+  users and in greyscale. Every text colour is at least 4.5:1 on its background; input borders use
+  `line-strong` (4.8:1) because WCAG 1.4.11 requires 3:1 for the edges of form controls, which the usual
+  light-grey border does not meet.
+- **System fonts**, no web font: nothing to download, no third-party request (simpler Content Security
+  Policy later), and text looks native on every device.
+- **Accessibility details:** 44 px minimum touch targets; 16 px input text (iOS Safari zooms into
+  smaller inputs); one `:focus-visible` outline for every control; animations off under
+  `prefers-reduced-motion`. Input hints sit between the label and the field (read before typing) and,
+  like errors, are linked with `aria-describedby`; invalid fields get `aria-invalid`. `Alert` uses
+  `role="alert"` for errors and warnings and `role="status"` for info and success.
+- **A loading `Button` stays enabled** and uses `aria-disabled` + `aria-busy` instead of `disabled`: a
+  disabled button drops keyboard focus to the page body mid-submit. Its click handler cancels the
+  event while loading, which also blocks a double submit from pressing Enter in a field (browsers turn
+  that into a click on the submit button).
+- **`/styleguide`** shows every token and component, in development only: the route sits behind
+  `import.meta.env.DEV`, which the production build replaces with `false`, so the page is not in the
+  bundle (checked after building).
+- **No source maps in the production build**: they would ship about 1.7 MB of source inside the jar.
+
+### Web app: API client, auth state and layout
+
+- **One API client** (`web/src/api/client.ts`); nothing else calls `fetch`. Every request sends
+  `credentials: "include"`. Before each `POST`/`PATCH`/`PUT`/`DELETE` it reads the `XSRF-TOKEN` cookie *at
+  that moment* and sends it as `X-XSRF-TOKEN`, so the token rotation at login and logout needs no
+  bookkeeping. The app also calls `GET /api/auth/csrf` on start-up and after logout (and the login page
+  will after login), as DESIGN's CSRF section asks. If the cookie is missing anyway, the client fetches
+  one first; a 403 with `"code": "csrf_invalid"` (e.g. the cookie was cleared mid-session) gets one
+  fresh token and one retry. Other 403s ("Your password is incorrect") are never retried.
+- **Not every 401 means "session expired".** Login answers a wrong password with 401, and `GET
+  /api/auth/me` answers "not logged in" with 401. Callers say so with `on401: "error"`; every other 401
+  ends the session in the app: the cached user is set to `null` and every other cached query is removed
+  (no private data stays in memory), and the route guard sends the user to `/login?next=<page>` with
+  "Your session has ended. Please log in again." A logout that gets 401 counts as a successful logout.
+- **Why the guard decides the redirect, not the API client.** Two things react to an ended session: the
+  cached user turning `null`, and a navigation. If both triggered navigations they would race (e.g. a
+  voluntary logout being redirected to `/login?next=/dashboard`). Instead, `auth/session.ts` records *why*
+  the session ended (`expired` or `logged-out`) and `RequireAuth` is the only place that redirects,
+  choosing the target and message from that reason. The login page clears the reason.
+- **`?next=` survives a reload** (unlike router state) and is checked by `safeNextPath`: only paths
+  starting with a single `/` are accepted, so `//evil.example` or `/\evil.example`, which browsers treat as
+  another site, cannot turn the login page into an open redirect.
+- **Error messages:** the backend's `detail` is shown when it is written for people (most are, e.g. "This
+  link is invalid or has expired. Please request a new one."). Details that look technical (CSRF
+  instructions, "Request validation failed", framework messages) are replaced by a plain fallback for the
+  status, 5xx is always "Something went wrong on our side…", and a failed `fetch` is "We couldn't reach
+  PulseCheck…". 429 uses `Retry-After`: "Please try again in N seconds", or minutes from 90 seconds up
+  (resend-verification allows 3 per hour, so waits can be 20 minutes).
+- **Queries retry only what may pass on its own** (network errors, 5xx; twice). 4xx answers and mutations
+  are never retried automatically.
+- **Layout:** a skip link, the header (logo, account menu) and, for unverified users, a "Please verify
+  your email" banner with "Resend link" on every logged-in page. The account menu is a disclosure
+  (`aria-expanded` button and a panel) rather than an ARIA `menu`, which would oblige full arrow-key menu
+  semantics for two items; it closes on Escape (returning focus to the button) and on outside clicks.
+  Each page sets the tab title (`usePageTitle`), the first thing screen readers announce after
+  navigation.
+
+### Web app: account pages
+
+- **Routes:** `/`, `/login`, `/signup` are for logged-out users (logged-in users go on to `?next=` or the
+  dashboard). `/check-inbox`, `/verify-email`, `/forgot-password` and `/reset-password` work either way:
+  an email link may be opened on a device where someone else, or nobody, is logged in. `/dashboard` and
+  `/settings/account` need a login.
+- **Client checks mirror the backend exactly:** password length 10–128 counted with JavaScript's
+  `.length`, which, like Java's `String.length()`, counts UTF-16 units (so an emoji counts as 2 on both
+  sides), and the same email pattern as `EmailAddresses`, applied to the trimmed, lower-cased address.
+  The rule is shown as the password field's hint (read before typing) with a live character count. Login
+  only checks that a password was entered: it must not hint at the rules for existing passwords.
+- **No "confirm password" fields;** every password field has a "Show password" toggle instead
+  (`aria-pressed`, constant label). It is one field fewer for people to fill in, and a mistyped new
+  password is recoverable through "Forgot your password?".
+- **Same wording as the API, never revealing whether an email has an account:** sign-up always goes to
+  "Check your inbox" with the address entered; forgot-password always says "If there is an account for
+  …". Login shows the backend's "Invalid email or password".
+- **Email-link tokens:** the page reads `?token=` once into component state and immediately replaces
+  the history entry with the same path without the query (`navigate(..., { replace: true })`, which is
+  `history.replaceState`), so the token is not kept in the browser history or visible in the address
+  bar. `index.html` also sets `<meta name="referrer" content="no-referrer">` (the server header comes
+  with serving the app from Spring Boot).
+- **The verification token is sent exactly once,** guarded by a ref: tokens are single-use, and React's
+  development StrictMode runs effects twice, which would otherwise turn a success into "link already
+  used". The tests render the app in StrictMode to cover this. "Try again" after a network error resends
+  the same (still unused) token.
+- **Expired/used links** (the backend's 400 "This link is invalid or has expired…") get their own state
+  with the next step: verification → "Request a new link" if logged in, otherwise "Log in to request a
+  new link" (the banner there has "Resend link"); reset → "Request a new link" (`/forgot-password`). A
+  reset password the backend rejects is shown on the field instead, since the backend validates the
+  password before using the token, so the link still works.
+- **After a password reset** the app forgets any logged-in user: the backend has just ended every
+  session of that account, possibly including this browser's.
+- **Wrong current password (403) is a field error,** not a logout; the API client only treats 401 as
+  an ended session.
+- **Delete account** needs the word DELETE typed (case-insensitive) plus the password. Afterwards the
+  session-end reason `account-deleted` sends the user to the login page with "Your account and all its
+  data have been deleted."
+- **Errors identified by title:** "Email not verified" (403, creating a monitor) has a detail aimed at
+  API users that names an endpoint, so the client shows its own wording for that title. A CSRF rejection
+  that survives the one retry says "Your page is out of date. Please reload the page and try again."
+  rather than "You don't have permission".
+
+### Web app: served by Spring Boot
+
+- **One image, built by a multi-stage Dockerfile** (Node stage → Maven stage → JRE), not a Maven profile
+  with frontend-maven-plugin. The Dockerfile is the only place that needs the complete app, so it is the
+  only place that needs Node; `./mvnw test` stays Node-free without a profile to remember. Node comes from
+  a pinned official image (`node:24.22.3-bookworm-slim`, matching `web/.nvmrc`) instead of a plugin
+  downloading its own copy on every clean build, and `npm ci` gets its own cached layer keyed on
+  `package-lock.json`. The build output is copied into `src/main/resources/static` inside the build
+  stage only (that path is git- and docker-ignored). CI already runs the web lint/test/build job; a new
+  `image` job builds the Dockerfile so a broken image build is caught on the pull request. Trade-off: a
+  plain `./mvnw package` jar has no website; for local frontend work use `npm run dev` (Vite proxy), or
+  the Compose stack for the production setup.
+- **Which paths are the website:** `WebAppPaths.BACKEND_PATTERNS` (`/api/**`, `/jobs/**`,
+  `/schedules/**`, `/actuator/**`, Swagger/OpenAPI, `/error`) belong to the backend; every other GET/HEAD
+  is the website. The security config and the SPA fallback use this one list. A new security chain
+  (`websiteSecurityFilterChain`, api profile only) permits those GET/HEADs; any other method on a website
+  path still falls through to the API-key chain and is denied. Because that chain is public, a controller
+  mapped outside the backend patterns would be public too, so `WebAppIntegrationTest` fails if any
+  `@RequestMapping` is outside them (the alert-email link pages have their own public chain).
+- **SPA fallback:** a resolver on the `/**` resource handler returns `index.html` (200) when no file
+  exists and the path is a client route: not a backend path, not under `/assets/`, and no `.` in the last
+  segment. So `/verify-email` or `/monitors/<id>` load the app, while a missing `/assets/app-x.js` or
+  `/robots.txt` is a 404 (HTML served as a script would only fail more confusingly), and `/api/nope`
+  stays a JSON ProblemDetail 404. "/" is forwarded to `/index.html` because the resource handler rejects
+  an empty path. Spring Boot's default static mapping is off (`spring.web.resources.add-mappings: false`)
+  so this is the only `/**` handler; Swagger UI registers its own and still works. The fallback handler
+  has no resolver cache: every made-up URL resolves, so a cache would grow without limit.
+- **Caching:** `/assets/**` (Vite's content-hashed files) `public, max-age=31536000, immutable`;
+  everything else, including `index.html`, `no-cache` (always revalidated by ETag/Last-Modified), so a
+  deploy is picked up on the next page load. Spring Security only adds its `no-store` when the response
+  has no Cache-Control, so 404s and API responses keep `no-store`.
+- **Security headers** on website responses: `Content-Security-Policy: default-src 'self'; script-src
+  'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self';
+  object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, `Referrer-Policy:
+  no-referrer` (email-link tokens are in the URL), `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+  DENY` (for old browsers without `frame-ancestors`). No `'unsafe-inline'` anywhere: the Vite build has
+  no inline scripts or styles, no `data:` URIs, system fonts and no CDN; React sets `style` props through
+  the DOM, which CSP allows. `upgrade-insecure-requests` and HSTS are left to the TLS-terminating proxy:
+  they would break plain-HTTP `localhost`.
+- **`code` on CSRF rejections:** the 403 for a missing or wrong CSRF token carries `"code":
+  "csrf_invalid"`; the web client retries (once, with a fresh token) only on that code, so rewording the
+  detail cannot break it, and no other 403 has a `code`.
+- **Every email link opens a page:** `/verify-email`, `/reset-password`, `/forgot-password` (app pages),
+  `/alert-recipients/confirm|unsubscribe` (backend pages), and `/monitors/{id}` ("View monitor" in alerts),
+  which had no page; it now shows the monitor's name, status, address and check interval, "Website not
+  found" for unknown or other people's monitors, and sends logged-out visitors to log in and back.
+  `web/src/emailLinks.test.tsx` renders each email path and fails on "Page not found".

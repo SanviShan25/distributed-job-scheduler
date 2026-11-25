@@ -21,6 +21,11 @@ spring:
         # Postgres error DETAIL lines can contain whole rows (e.g. "Failing row contains (...)"), including job
         # payloads with one-time tokens. Keep them out of exception messages and therefore out of logs.
         logServerErrorDetail: false
+  web:
+    resources:
+      # The web app's static files and SPA fallback are mapped by WebAppConfig (own cache headers); without
+      # this, Boot would register a second /** handler.
+      add-mappings: false
   jpa:
     hibernate.ddl-auto: validate
     open-in-view: false

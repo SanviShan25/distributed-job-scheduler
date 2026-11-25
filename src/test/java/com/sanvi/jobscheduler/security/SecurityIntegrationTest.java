@@ -63,9 +63,10 @@ class SecurityIntegrationTest extends AbstractIntegrationTest {
             .andExpect(content().string(containsString("X-API-Key")));
     }
 
+    /** GETs to unknown paths are the web app now (see WebAppIntegrationTest); anything else is still denied. */
     @Test
     void unknownPathsAreDenied() throws Exception {
-        anonymous.perform(get("/internal/whatever").header("X-API-Key", "test-key"))
+        anonymous.perform(post("/internal/whatever").header("X-API-Key", "test-key"))
             .andExpect(status().isForbidden());
     }
 }

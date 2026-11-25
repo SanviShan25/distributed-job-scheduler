@@ -274,7 +274,8 @@ class AccountEmailFlowsIntegrationTest extends AbstractIntegrationTest {
 
         current.postJson("/api/auth/change-password", "{\"currentPassword\":\"wrong\",\"newPassword\":\"brand new password\"}")
             .andExpect(status().isForbidden())
-            .andExpect(jsonPath("$.detail").value("Your password is incorrect"));
+            .andExpect(jsonPath("$.detail").value("Your password is incorrect"))
+            .andExpect(jsonPath("$.code").doesNotExist()); // only CSRF rejections carry csrf_invalid
         current.postJson("/api/auth/change-password",
                 "{\"currentPassword\":\"" + PASSWORD + "\",\"newPassword\":\"brand new password\"}")
             .andExpect(status().isOk());

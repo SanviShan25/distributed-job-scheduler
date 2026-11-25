@@ -22,6 +22,8 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 - [Design trade-offs](#design-trade-offs)
 - [Quick start (Docker Compose)](#quick-start-docker-compose)
 - [PulseCheck (in progress)](#pulsecheck-in-progress)
+- [Web app (frontend)](#web-app-frontend)
+- [Project structure](#project-structure)
 - [Running from an IDE](#running-from-an-ide)
 - [Configuration reference](#configuration-reference)
 - [API reference](#api-reference)
@@ -190,7 +192,8 @@ docker compose up -d --build --scale worker=3
 
 | Service | URL | Notes |
 |---|---|---|
-| API | http://localhost:8080 | send `X-API-Key: <one of API_KEYS>` |
+| PulseCheck website | http://localhost:8080 | the React app, served by the API container |
+| API | http://localhost:8080 | `/jobs`, `/schedules`: send `X-API-Key: <one of API_KEYS>`; `/api`: PulseCheck sessions |
 | Swagger UI | http://localhost:8080/swagger-ui.html | click **Authorize** and enter an API key |
 | Prometheus | http://127.0.0.1:9090 | bound to localhost only |
 | Grafana | http://127.0.0.1:3000 | `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`; *Job Scheduler* dashboard is provisioned |
@@ -208,7 +211,7 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 
 **PulseCheck** is a website uptime monitor for non-technical users, built on top of this scheduler. The scheduler is the engine: each monitor is a recurring `HTTP_CHECK` schedule, and every check is an ordinary job, with the same retries, leases and recovery.
 
-**Status:** backend only: user accounts, monitors, HTTP checks, status, incidents, uptime, SSRF protection, and real emails (verification, password reset, DOWN/UP alerts) sent through [Resend](https://resend.com). There is no web UI yet.
+**Status:** the backend is complete: user accounts, monitors, HTTP checks, status, incidents, uptime, SSRF protection, and real emails (verification, password reset, DOWN/UP alerts) sent through [Resend](https://resend.com). The [web app](#web-app-frontend) has the account pages (sign-up, log in, email verification, password reset, account settings) and a page per monitor; the dashboard is still a placeholder, so monitors are created through the API for now.
 
 **How monitoring works**
 
@@ -399,6 +402,64 @@ This URL can't be monitored: localhost resolves to a private or reserved address
 
 All three `SEND_EMAIL` jobs (`email:verify:{tokenId}`, `alert:{incidentId}:down`, `alert:{incidentId}:up`) ended `SUCCEEDED` after 1 attempt, with their one-time link token removed (`"secretRedacted": true`); `alert_events` recorded `DOWN SENT` and `UP SENT`, and no log line contained a link token.
 
+## Web app (frontend)
+
+The PulseCheck website is a React 19 + TypeScript single-page app in [`web/`](web/) (Vite, Tailwind CSS, React Router, TanStack Query). Node 24 is needed only to work on it (`web/.nvmrc`).
+
+**In production** (and in Docker Compose) it is part of the API image: the [Dockerfile](Dockerfile) builds `web/` in a Node stage and puts the output into the jar's static files, and Spring Boot serves it on the same origin as the API at http://localhost:8080. Any path that is not a backend path (`/api`, `/jobs`, `/schedules`, `/actuator`, Swagger) and not a file gets `index.html`, so links like `/verify-email?token=…` work on reload. The pages are sent with a strict Content-Security-Policy and `Referrer-Policy: no-referrer`; hashed files under `/assets/` are cached for a year, `index.html` is always revalidated. `./mvnw test`/`package` do not need Node; a jar built that way has no website.
+
+**For development**, run the backend (Compose, or [from an IDE](#running-from-an-ide)) on :8080 and start Vite:
+
+```bash
+cd web
+npm ci
+npm run dev        # http://localhost:5173, forwards /api to http://localhost:8080
+```
+
+Vite forwards `/api` to the backend, so the browser sees one origin and session and CSRF cookies work as in production (no CORS). Edits reload instantly. `/styleguide` shows every UI component (development only).
+
+Email links point at `PULSECHECK_APP_BASE_URL` (default http://localhost:8080, the Compose-served app). To open them in the Vite dev server instead, set it to `http://localhost:5173` in `.env` and restart the API and workers, or change `8080` to `5173` in the link by hand.
+
+```bash
+npm test               # Vitest + Testing Library
+npm run lint           # ESLint (type-checked rules)
+npm run format:check   # Prettier (npm run format fixes)
+npm run build          # type-check + production build into web/dist
+```
+
+## Project structure
+
+```
+.
+├── src/main/java/com/sanvi/jobscheduler/
+│   ├── api/          scheduler REST API (/jobs), errors as ProblemDetail
+│   ├── domain/, repo/  jobs and schedules: entities and repositories
+│   ├── lock/         Redis distributed lock
+│   ├── schedule/     cron schedules (/schedules) and the schedule runner
+│   ├── queue/        Redis ready/delayed queues
+│   ├── worker/       worker loop, leases, retries, job handlers
+│   ├── monitor/      reaper, sweeper, heartbeats, retention, metrics
+│   ├── security/     security filter chains, API keys, rate limiting
+│   ├── web/          serving the web app (static files, SPA fallback)
+│   └── pulsecheck/   uptime monitor: auth, monitors, checks, alerts, email
+├── src/main/resources/db/migration/   Flyway migrations
+├── src/test/                          unit + Testcontainers integration tests
+├── web/                               PulseCheck website (React + TypeScript)
+│   └── src/
+│       ├── api/          the one API client (cookies, CSRF, error messages)
+│       ├── auth/         current user, session end, route guards, account calls
+│       ├── components/   UI kit (ui/) and page layouts (layout/)
+│       ├── lib/          small helpers (forms, query client, page titles)
+│       ├── monitors/     monitor queries
+│       ├── pages/        one component per route, tests next to them
+│       └── test/         fake backend and render helpers for tests
+├── docs/DESIGN.md       design decisions
+├── scripts/             load and fault-tolerance tests
+├── grafana/, prometheus.yml           monitoring
+├── Dockerfile           web build → jar build → JRE image
+└── docker-compose.yml   Postgres, Redis, API, workers, Prometheus, Grafana
+```
+
 ## Running from an IDE
 
 Start Postgres and Redis with the ports enabled in `docker-compose.override.yml`. Then run `JobschedulerApplication` with:
@@ -561,7 +622,10 @@ The handler must be on the classpath of both the API (which validates `type`) an
 ```bash
 ./mvnw test      # unit + integration tests; needs only a running Docker daemon
 ./mvnw verify    # what CI runs (.github/workflows/ci.yml)
+cd web && npm test   # web app tests (see Web app)
 ```
+
+CI also lints, tests and builds `web/`, and builds the Docker image.
 
 Integration tests start throw-away `postgres:16` and `redis:7` containers through Testcontainers `@ServiceConnection`; no local Postgres or Redis is needed. Background `@Scheduled` tasks are disabled in tests (`scheduler.scheduling-enabled=false`) so tests can call the sweeps deterministically. Coverage includes:
 

@@ -2,6 +2,7 @@ package com.sanvi.jobscheduler.security;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
@@ -19,6 +20,14 @@ import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfException;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.AndRequestMatcher;
+import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+
+import com.sanvi.jobscheduler.web.WebAppPaths;
 
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -38,6 +47,10 @@ import jakarta.servlet.http.HttpServletResponse;
  *   <li>{@code /api/monitors/**} and anything else under {@code /api}: logged-in user</li>
  * </ul>
  *
+ * <p><b>The website (api profile): every GET/HEAD outside {@link WebAppPaths#BACKEND_PATTERNS}, public.</b>
+ * Static files of the React app, and {@code index.html} for client-side routes. Strict security headers
+ * (Content-Security-Policy, no referrer, no framing).
+ *
  * <p><b>Scheduler and everything else, stateless API key.</b>
  * <ul>
  *   <li>{@code /jobs/**}, {@code /schedules/**}: require a valid {@code X-API-Key}</li>
@@ -45,7 +58,7 @@ import jakarta.servlet.http.HttpServletResponse;
  *       the separate management port ({@code MANAGEMENT_PORT}, default 9091), which Compose does not
  *       publish, so they are only reachable from the internal network (Prometheus, health checks).</li>
  *   <li>Swagger UI / OpenAPI docs: open (the docs are not secret; calling the API still needs a key)</li>
- *   <li>everything else: denied</li>
+ *   <li>everything else (e.g. a POST to a website path): denied</li>
  * </ul>
  */
 @Configuration(proxyBeanMethods = false)
@@ -88,12 +101,12 @@ public class SecurityConfig {
     SecurityFilterChain pulseCheckSecurityFilterChain(HttpSecurity http, SecurityContextRepository contexts,
             CsrfTokenRepository csrfTokens) throws Exception {
         AuthenticationEntryPoint notLoggedIn = (request, response, ex) -> writeProblem(response,
-            HttpStatus.UNAUTHORIZED, "Please log in", request.getRequestURI());
+            HttpStatus.UNAUTHORIZED, "Please log in", request.getRequestURI(), null);
         AccessDeniedHandler denied = (request, response, ex) -> writeProblem(response, HttpStatus.FORBIDDEN,
             ex instanceof CsrfException
                 ? "Missing or invalid CSRF token: call GET /api/auth/csrf and send the token in the X-XSRF-TOKEN header"
                 : "Access denied",
-            request.getRequestURI());
+            request.getRequestURI(), ex instanceof CsrfException ? CSRF_INVALID_CODE : null);
 
         http
             .securityMatcher("/api/**")
@@ -113,8 +126,45 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * Content-Security-Policy for the built web app: only its own scripts, styles, images and API (no inline
+     * code, no third-party origins: the app uses system fonts and no CDN), and it may not be framed.
+     */
+    public static final String WEBSITE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; "
+        + "img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; object-src 'none'; "
+        + "base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+    /** The React web app. Only GET/HEAD, and never a backend path, so it cannot open a way around the other chains. */
     @Bean
     @Order(2)
+    @Profile("api")
+    SecurityFilterChain websiteSecurityFilterChain(HttpSecurity http) throws Exception {
+        PathPatternRequestMatcher.Builder paths = PathPatternRequestMatcher.withDefaults();
+        RequestMatcher readOnly = new OrRequestMatcher(paths.matcher(HttpMethod.GET, "/**"),
+            paths.matcher(HttpMethod.HEAD, "/**"));
+        RequestMatcher backend = new OrRequestMatcher(
+            WebAppPaths.BACKEND_PATTERNS.stream().map(paths::matcher).toArray(RequestMatcher[]::new));
+
+        http
+            .securityMatcher(new AndRequestMatcher(readOnly, new NegatedRequestMatcher(backend)))
+            .csrf(csrf -> csrf.disable()) // read-only requests, no session
+            .httpBasic(basic -> basic.disable())
+            .formLogin(form -> form.disable())
+            .logout(logout -> logout.disable())
+            .requestCache(cache -> cache.disable())
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .headers(headers -> headers
+                .contentSecurityPolicy(csp -> csp.policyDirectives(WEBSITE_CSP))
+                .referrerPolicy(referrer -> referrer.policy(ReferrerPolicy.NO_REFERRER))
+                .frameOptions(frame -> frame.deny()))
+            // X-Content-Type-Options: nosniff is on by default. Spring Security's "no-store" Cache-Control is
+            // only added when the response has none, so the resource handlers' cache headers win.
+            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
+    }
+
+    @Bean
+    @Order(3)
     SecurityFilterChain apiKeySecurityFilterChain(HttpSecurity http, ApiSecurityProperties props, Environment env)
             throws Exception {
         if (env.acceptsProfiles(Profiles.of("api")) && props.configuredKeys().isEmpty()) {
@@ -123,9 +173,9 @@ public class SecurityConfig {
         }
         AuthenticationEntryPoint entryPoint = (request, response, ex) -> writeProblem(response,
             HttpStatus.UNAUTHORIZED, "Missing or invalid " + ApiKeyAuthenticationFilter.HEADER + " header",
-            request.getRequestURI());
+            request.getRequestURI(), null);
         AccessDeniedHandler denied = (request, response, ex) -> writeProblem(response, HttpStatus.FORBIDDEN,
-            "Access denied", request.getRequestURI());
+            "Access denied", request.getRequestURI(), null);
 
         http
             .csrf(csrf -> csrf.disable()) // no cookies or sessions: CSRF does not apply
@@ -146,12 +196,20 @@ public class SecurityConfig {
         return http.build();
     }
 
-    private static void writeProblem(HttpServletResponse response, HttpStatus status, String detail, String instance)
-            throws java.io.IOException {
+    /**
+     * Machine-readable {@code code} of a CSRF rejection, so clients can recognise it (and fetch a fresh token)
+     * without depending on the wording of {@code detail}.
+     */
+    public static final String CSRF_INVALID_CODE = "csrf_invalid";
+
+    /** {@code detail} and {@code code} are constants here; only {@code instance} comes from the request. */
+    private static void writeProblem(HttpServletResponse response, HttpStatus status, String detail, String instance,
+            String code) throws java.io.IOException {
         response.setStatus(status.value());
         response.setContentType("application/problem+json");
         response.getWriter().write("{\"type\":\"about:blank\",\"title\":\"" + status.getReasonPhrase()
             + "\",\"status\":" + status.value() + ",\"detail\":\"" + detail + "\",\"instance\":\""
-            + instance.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}");
+            + instance.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+            + (code == null ? "" : ",\"code\":\"" + code + "\"") + "}");
     }
 }
