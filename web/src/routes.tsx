@@ -9,6 +9,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
+import { MonitorPage } from "./pages/MonitorPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { RouteErrorPage } from "./pages/RouteErrorPage";
@@ -66,6 +67,8 @@ export const routes: RouteObject[] = [
             element: <AppLayout />,
             children: [
               { path: "dashboard", element: <DashboardPage /> },
+              // Alert emails link here ("View monitor").
+              { path: "monitors/:monitorId", element: <MonitorPage /> },
               { path: "settings/account", element: <AccountSettingsPage /> },
             ],
           },

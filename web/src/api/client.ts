@@ -25,8 +25,13 @@ export interface ProblemDetail {
   status?: number;
   detail?: string;
   instance?: string;
+  /** Stable machine-readable error code, when the backend sets one (e.g. "csrf_invalid"). */
+  code?: string;
   errors?: { field: string; message: string }[];
 }
+
+/** ProblemDetail `code` of a CSRF rejection (SecurityConfig.CSRF_INVALID_CODE on the backend). */
+export const CSRF_INVALID_CODE = "csrf_invalid";
 
 export class ApiError extends Error {
   /** HTTP status, or 0 when the server could not be reached. */
@@ -177,11 +182,12 @@ async function readProblem(response: Response): Promise<ProblemDetail> {
 }
 
 /**
- * Only the backend's CSRF rejection ("Missing or invalid CSRF token: …") is worth a fresh token and a
- * retry. Every other 403 (wrong password, email not verified) is a real answer and is never retried.
+ * Only the backend's CSRF rejection is worth a fresh token and a retry. It is recognised by its code, not
+ * its wording, which may change. Every other 403 (wrong password, email not verified) is a real answer
+ * and is never retried.
  */
 function isCsrfProblem(problem: ProblemDetail): boolean {
-  return /csrf token/i.test(problem.detail ?? "");
+  return problem.code === CSRF_INVALID_CODE;
 }
 
 function networkError(): ApiError {

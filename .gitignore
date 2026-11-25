@@ -42,3 +42,6 @@ __MACOSX/
 
 ### Tool output ###
 .github/modernize/
+
+### Web app build output (copied into the jar by the Dockerfile) ###
+/src/main/resources/static/

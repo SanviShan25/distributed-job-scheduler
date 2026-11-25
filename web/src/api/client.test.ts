@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { sessionEnd } from "../auth/session";
-import { fakeBackend, json, noContent, problem, setCookie } from "../test/fakeBackend";
+import {
+  csrfRejection,
+  fakeBackend,
+  json,
+  noContent,
+  problem,
+  setCookie,
+} from "../test/fakeBackend";
 import { api, ApiError, formatWait } from "./client";
 
 async function failure(promise: Promise<unknown>): Promise<ApiError> {
@@ -58,7 +65,7 @@ describe("API client: cookies and CSRF", () => {
     const backend = fakeBackend({
       "POST /api/thing": (request) =>
         request.headers.get("X-XSRF-TOKEN") === "stale"
-          ? problem(403, "Missing or invalid CSRF token: call GET /api/auth/csrf …")
+          ? csrfRejection()
           : json(200, { done: true }),
     });
 
@@ -107,16 +114,37 @@ describe("API client: CSRF retry is only for CSRF rejections", () => {
 
   it("retries a CSRF rejection only once", async () => {
     setCookie("XSRF-TOKEN", "t");
-    const backend = fakeBackend({
-      "POST /api/thing": () =>
-        problem(403, "Missing or invalid CSRF token: call GET /api/auth/csrf …"),
-    });
+    const backend = fakeBackend({ "POST /api/thing": () => csrfRejection() });
 
     const error = await failure(api.post("/api/thing"));
 
     expect(backend.requests.map((r) => r.method)).toEqual(["POST", "GET", "POST"]);
     expect(error.status).toBe(403);
     expect(error.message).toBe("Your page is out of date. Please reload the page and try again.");
+  });
+
+  it("recognises a CSRF rejection by its code, not by the wording of its message", async () => {
+    setCookie("XSRF-TOKEN", "t");
+    const backend = fakeBackend({
+      // A 403 that merely mentions a CSRF token is not a CSRF rejection without the code…
+      "POST /api/thing": () => problem(403, "Something about a CSRF token"),
+      // …and one with the code is, whatever its message says.
+      "POST /api/other": (request) =>
+        request.headers.get("X-XSRF-TOKEN") === "t"
+          ? json(403, { title: "Forbidden", status: 403, detail: "Reworded", code: "csrf_invalid" })
+          : noContent(),
+    });
+
+    const error = await failure(api.post("/api/thing"));
+    expect(error.status).toBe(403);
+    expect(backend.requests.map((r) => r.path)).toEqual(["/api/thing"]);
+
+    await expect(api.post("/api/other")).resolves.toBeUndefined();
+    expect(backend.requests.map((r) => `${r.method} ${r.path}`).slice(1)).toEqual([
+      "POST /api/other",
+      "GET /api/auth/csrf",
+      "POST /api/other",
+    ]);
   });
 });
 

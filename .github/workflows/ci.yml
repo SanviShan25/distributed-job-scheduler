@@ -51,3 +51,13 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # The production image: builds the web app (Node stage) into the Spring Boot jar. Catches a broken
+  # Dockerfile or a web build that only fails inside the image.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the Docker image
+        run: docker build --tag pulsecheck:ci .

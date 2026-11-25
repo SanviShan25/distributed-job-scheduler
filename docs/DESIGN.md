@@ -165,7 +165,8 @@ each check is an `HTTP_CHECK` job created by a recurring schedule.
   3. The token changes on login and logout. Reading the cookie per request handles this; an app that
      caches the token must call `GET /api/auth/csrf` again after login/logout.
   4. All requests need `credentials: "include"` (fetch) or `withCredentials: true` (Axios).
-  A missing or wrong token gets `403` with a message pointing to `GET /api/auth/csrf`.
+  A missing or wrong token gets `403` with a message pointing to `GET /api/auth/csrf` and
+  `"code": "csrf_invalid"`, which clients should check instead of the message text.
 - **Interim state:** `/api/monitors/**` now requires a logged-in user, but `CurrentUser` still resolves
   to the dev user until the next step switches it to the logged-in user.
 - **Testing note:** Spring Security's `csrf()` MockMvc helper permanently replaces the CSRF repository
@@ -469,8 +470,8 @@ runs while a transaction is active.
   that moment* and sends it as `X-XSRF-TOKEN`, so the token rotation at login and logout needs no
   bookkeeping. The app also calls `GET /api/auth/csrf` on start-up and after logout (and the login page
   will after login), as DESIGN's CSRF section asks. If the cookie is missing anyway, the client fetches
-  one first; a 403 whose detail mentions CSRF (e.g. the cookie was cleared mid-session) gets one fresh
-  token and one retry. Other 403s ("Your password is incorrect") are never retried.
+  one first; a 403 with `"code": "csrf_invalid"` (e.g. the cookie was cleared mid-session) gets one
+  fresh token and one retry. Other 403s ("Your password is incorrect") are never retried.
 - **Not every 401 means "session expired".** Login answers a wrong password with 401, and `GET
   /api/auth/me` answers "not logged in" with 401. Callers say so with `on401: "error"`; every other 401
   ends the session in the app: the cached user is set to `null` and every other cached query is removed
@@ -541,3 +542,51 @@ runs while a transaction is active.
   API users that names an endpoint, so the client shows its own wording for that title. A CSRF rejection
   that survives the one retry says "Your page is out of date. Please reload the page and try again."
   rather than "You don't have permission".
+
+### Web app: served by Spring Boot
+
+- **One image, built by a multi-stage Dockerfile** (Node stage → Maven stage → JRE), not a Maven profile
+  with frontend-maven-plugin. The Dockerfile is the only place that needs the complete app, so it is the
+  only place that needs Node; `./mvnw test` stays Node-free without a profile to remember. Node comes from
+  a pinned official image (`node:24.22.3-bookworm-slim`, matching `web/.nvmrc`) instead of a plugin
+  downloading its own copy on every clean build, and `npm ci` gets its own cached layer keyed on
+  `package-lock.json`. The build output is copied into `src/main/resources/static` inside the build
+  stage only (that path is git- and docker-ignored). CI already runs the web lint/test/build job; a new
+  `image` job builds the Dockerfile so a broken image build is caught on the pull request. Trade-off: a
+  plain `./mvnw package` jar has no website; for local frontend work use `npm run dev` (Vite proxy), or
+  the Compose stack for the production setup.
+- **Which paths are the website:** `WebAppPaths.BACKEND_PATTERNS` (`/api/**`, `/jobs/**`,
+  `/schedules/**`, `/actuator/**`, Swagger/OpenAPI, `/error`) belong to the backend; every other GET/HEAD
+  is the website. The security config and the SPA fallback use this one list. A new security chain
+  (`websiteSecurityFilterChain`, api profile only) permits those GET/HEADs; any other method on a website
+  path still falls through to the API-key chain and is denied. Because that chain is public, a controller
+  mapped outside the backend patterns would be public too, so `WebAppIntegrationTest` fails if any
+  `@RequestMapping` is outside them (the alert-email link pages have their own public chain).
+- **SPA fallback:** a resolver on the `/**` resource handler returns `index.html` (200) when no file
+  exists and the path is a client route: not a backend path, not under `/assets/`, and no `.` in the last
+  segment. So `/verify-email` or `/monitors/<id>` load the app, while a missing `/assets/app-x.js` or
+  `/robots.txt` is a 404 (HTML served as a script would only fail more confusingly), and `/api/nope`
+  stays a JSON ProblemDetail 404. "/" is forwarded to `/index.html` because the resource handler rejects
+  an empty path. Spring Boot's default static mapping is off (`spring.web.resources.add-mappings: false`)
+  so this is the only `/**` handler; Swagger UI registers its own and still works. The fallback handler
+  has no resolver cache: every made-up URL resolves, so a cache would grow without limit.
+- **Caching:** `/assets/**` (Vite's content-hashed files) `public, max-age=31536000, immutable`;
+  everything else, including `index.html`, `no-cache` (always revalidated by ETag/Last-Modified), so a
+  deploy is picked up on the next page load. Spring Security only adds its `no-store` when the response
+  has no Cache-Control, so 404s and API responses keep `no-store`.
+- **Security headers** on website responses: `Content-Security-Policy: default-src 'self'; script-src
+  'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self';
+  object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, `Referrer-Policy:
+  no-referrer` (email-link tokens are in the URL), `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+  DENY` (for old browsers without `frame-ancestors`). No `'unsafe-inline'` anywhere: the Vite build has
+  no inline scripts or styles, no `data:` URIs, system fonts and no CDN; React sets `style` props through
+  the DOM, which CSP allows. `upgrade-insecure-requests` and HSTS are left to the TLS-terminating proxy:
+  they would break plain-HTTP `localhost`.
+- **`code` on CSRF rejections:** the 403 for a missing or wrong CSRF token carries `"code":
+  "csrf_invalid"`; the web client retries (once, with a fresh token) only on that code, so rewording the
+  detail cannot break it, and no other 403 has a `code`.
+- **Every email link opens a page:** `/verify-email`, `/reset-password`, `/forgot-password` (app pages),
+  `/alert-recipients/confirm|unsubscribe` (backend pages), and `/monitors/{id}` ("View monitor" in alerts),
+  which had no page; it now shows the monitor's name, status, address and check interval, "Website not
+  found" for unknown or other people's monitors, and sends logged-out visitors to log in and back.
+  `web/src/emailLinks.test.tsx` renders each email path and fails on "Page not found".

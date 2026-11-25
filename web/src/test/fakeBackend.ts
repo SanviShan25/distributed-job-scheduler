@@ -29,6 +29,22 @@ export function problem(status: number, detail: string, headers: Record<string, 
   });
 }
 
+/** The backend's CSRF rejection, exactly as SecurityConfig writes it. */
+export function csrfRejection() {
+  return new Response(
+    JSON.stringify({
+      type: "about:blank",
+      title: "Forbidden",
+      status: 403,
+      detail:
+        "Missing or invalid CSRF token: call GET /api/auth/csrf and send the token in the X-XSRF-TOKEN header",
+      instance: "/api/thing",
+      code: "csrf_invalid",
+    }),
+    { status: 403, headers: { "Content-Type": "application/problem+json" } },
+  );
+}
+
 export function setCookie(name: string, value: string) {
   document.cookie = `${name}=${value}; path=/`;
 }

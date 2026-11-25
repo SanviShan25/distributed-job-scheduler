@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -146,6 +147,8 @@ class AuthSessionIntegrationTest extends AbstractIntegrationTest {
         Browser browser = new Browser(); // never fetched a token
         browser.login("ann@example.com", PASSWORD, false)
             .andExpect(status().isForbidden())
+            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+            .andExpect(jsonPath("$.code").value("csrf_invalid"))
             .andExpect(jsonPath("$.detail", containsString("CSRF")));
         // (The 403 above set an XSRF-TOKEN cookie, as every response does; a request sent without it fails too.)
         mvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
@@ -162,7 +165,8 @@ class AuthSessionIntegrationTest extends AbstractIntegrationTest {
         // A wrong token is rejected too.
         mvc.perform(post("/api/auth/logout").cookie(new Cookie(SESSION_COOKIE, loggedIn.sessionCookie()))
                 .cookie(new Cookie("XSRF-TOKEN", "attacker")).header("X-XSRF-TOKEN", "attacker-different"))
-            .andExpect(status().isForbidden());
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("csrf_invalid"));
     }
 
     @Test
