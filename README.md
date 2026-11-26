@@ -252,7 +252,7 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | `POST /api/auth/login` | anyone | `{email, password, rememberMe?}`; starts a session |
 | `POST /api/auth/forgot-password` | anyone | `{email}`; always the same answer |
 | `POST /api/auth/reset-password` | anyone | `{token, newPassword}`; logs out every session |
-| `GET /api/auth/me` | logged in | The current user |
+| `GET /api/auth/me` | logged in | The current user, with `monitorLimit` (how many monitors the account may have) |
 | `POST /api/auth/logout` | logged in | Ends the session |
 | `POST /api/auth/resend-verification` | logged in | New verification link (3/hour) |
 | `POST /api/auth/change-password` | logged in | `{currentPassword, newPassword}`; logs out other sessions |
@@ -263,7 +263,7 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | Method & path | Description |
 |---|---|
 | `POST /api/monitors` | Create: `name`, `url`, `intervalSeconds` (60/300/900/3600), optional `notifyOwner` (default `true`) |
-| `GET /api/monitors` | List my monitors, each with `notifyOwner` and its `recipients` (email + `PENDING`/`CONFIRMED`/`UNSUBSCRIBED`) |
+| `GET /api/monitors` | List my monitors, each with `notifyOwner`, its `recipients` (email + `PENDING`/`CONFIRMED`/`UNSUBSCRIBED`) and its last-24 h `uptime` (`last24h`, `avgResponseMs24h`, `checks24h`; `last7d`/`last30d` are null here) |
 | `GET /api/monitors/{id}` | One monitor, with its recipients and uptime summary |
 | `PATCH /api/monitors/{id}` | Change name, URL, interval or `notifyOwner`. Changing the URL closes any open incident without an UP alert |
 | `POST /api/monitors/{id}/pause`, `/resume` | Stop / restart checks |

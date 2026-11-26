@@ -443,7 +443,7 @@ runs while a transaction is active.
 - **Colours:** the brand colour is indigo, deliberately neither green nor red, so a button or link is
   never mistaken for a status. Status colours (UP green-700, DOWN red-700, UNKNOWN/PAUSED slate) are
   never the only signal: `StatusBadge` always shows a word and an icon with a different *shape* per
-  status (check-circle, warning triangle, question-circle, pause-circle), which works for colour-blind
+  status (check-circle, warning triangle, clock, pause-circle), which works for colour-blind
   users and in greyscale. Every text colour is at least 4.5:1 on its background; input borders use
   `line-strong` (4.8:1) because WCAG 1.4.11 requires 3:1 for the edges of form controls, which the usual
   light-grey border does not meet.
@@ -590,3 +590,22 @@ runs while a transaction is active.
   which had no page; it now shows the monitor's name, status, address and check interval, "Website not
   found" for unknown or other people's monitors, and sends logged-out visitors to log in and back.
   `web/src/emailLinks.test.tsx` renders each email path and fails on "Page not found".
+
+### Web app: dashboard
+
+- **One request for all cards.** `GET /api/monitors` now includes each monitor's last-24 h uptime and
+  average response time, computed by one grouped SQL query over at most 24 h of rows per monitor (the
+  `(monitor_id, checked_at)` index), instead of the page calling `GET /api/monitors/{id}` once per card.
+  The list leaves 7 d / 30 d null: a 30-day scan for every card every 30 seconds is not worth it for
+  figures the card does not show. `GET /api/auth/me` includes `monitorLimit`, so "3 of 10 websites" and
+  the disabled "Add website" button follow the server setting instead of a number copied into the app.
+- **Status words for people:** UNKNOWN (new, resumed or a changed URL, not checked yet) is shown as
+  "Checking" with a clock icon, and a paused monitor is always "Paused", whatever its last status was.
+- **Order:** down websites first (they need attention), then by name (case-insensitive, numbers in
+  order, so "Site 2" comes before "Site 10").
+- **Refreshing:** every 30 s with TanStack Query's `refetchInterval`, which already pauses while the tab
+  is hidden (`refetchIntervalInBackground` is false by default) and refetches on return when the data is
+  stale. If a refresh fails, the cards stay and a warning says how old they are. Relative times ("2
+  minutes ago", local time zone in the tooltip) re-render every 15 s.
+- **Cards** are an `article` named by the website's name; the name is the only link, and its `::after`
+  stretches over the card, so the whole card is clickable while screen readers hear one link.

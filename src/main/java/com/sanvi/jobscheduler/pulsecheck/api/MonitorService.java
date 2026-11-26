@@ -1,8 +1,11 @@
 package com.sanvi.jobscheduler.pulsecheck.api;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.domain.Page;
@@ -117,6 +120,15 @@ public class MonitorService {
 
     public CheckResultRepository.UptimeStats uptime(UUID monitorId) {
         return results.uptime(monitorId);
+    }
+
+    /** 24 h uptime and response time per monitor; monitors without checks in that window are absent. */
+    public Map<UUID, CheckResultRepository.DailyStats> last24h(Collection<UUID> monitorIds) {
+        if (monitorIds.isEmpty()) {
+            return Map.of();
+        }
+        return results.last24h(monitorIds).stream()
+            .collect(Collectors.toMap(CheckResultRepository.DailyStats::getMonitorId, s -> s));
     }
 
     /** Partial update; null fields are unchanged. A new URL starts over from UNKNOWN. */

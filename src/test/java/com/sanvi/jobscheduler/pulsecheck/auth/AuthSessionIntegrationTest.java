@@ -110,6 +110,7 @@ class AuthSessionIntegrationTest extends AbstractIntegrationTest {
 
         browser.perform(get("/api/auth/me")).andExpect(status().isOk())
             .andExpect(jsonPath("$.email").value("ann@example.com"))
+            .andExpect(jsonPath("$.monitorLimit").value(10))
             .andExpect(jsonPath("$.passwordHash").doesNotExist());
 
         String sessionBeforeLogout = browser.sessionCookie();

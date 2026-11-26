@@ -175,6 +175,31 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
             .andExpect(jsonPath("$.content[0].statusCode").value(500));
     }
 
+    @Test
+    void theListIncludesEachMonitorsLast24Hours() throws Exception {
+        sites.script("https://flaky.test/", HttpChecker.Outcome.down(500, 12, "HTTP 500"));
+        UUID up = create("Up", "https://up.test", 60);
+        UUID flaky = create("Flaky", "https://flaky.test", 60);
+        UUID fresh = create("Fresh", "https://fresh.test", 60);
+        runQueuedChecks();
+        jdbc.update("delete from check_results where monitor_id = ?", fresh);
+        // A check from 2 days ago counts for 7 d / 30 d only, so not in the list's figures.
+        jdbc.update("insert into check_results (monitor_id, checked_at, up, status_code, response_ms) "
+            + "values (?, now() - interval '2 days', true, 200, 999)", flaky);
+
+        mvc.perform(get("/api/monitors"))
+            .andExpect(jsonPath("$[0].id").value(up.toString()))
+            .andExpect(jsonPath("$[0].uptime.last24h").value(100.0))
+            .andExpect(jsonPath("$[0].uptime.avgResponseMs24h").value(42))
+            .andExpect(jsonPath("$[0].uptime.checks24h").value(1))
+            .andExpect(jsonPath("$[0].uptime.last7d").doesNotExist())
+            .andExpect(jsonPath("$[1].uptime.last24h").value(0.0))
+            .andExpect(jsonPath("$[1].uptime.avgResponseMs24h").doesNotExist())
+            .andExpect(jsonPath("$[1].uptime.checks24h").value(1))
+            .andExpect(jsonPath("$[2].uptime.last24h").doesNotExist())
+            .andExpect(jsonPath("$[2].uptime.checks24h").value(0));
+    }
+
     // ------------------------------------------------------------------ pause / resume / delete
 
     @Test

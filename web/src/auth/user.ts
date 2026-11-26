@@ -7,6 +7,8 @@ export interface User {
   email: string;
   emailVerified: boolean;
   createdAt: string;
+  /** How many websites this account may monitor. */
+  monitorLimit: number;
 }
 
 export const meQueryKey = ["auth", "me"] as const;

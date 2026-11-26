@@ -2,7 +2,7 @@ import { useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { Alert, Button, ButtonLink, Card, Spinner, StatusBadge, TextLink } from "../components/ui";
 import { usePageTitle } from "../lib/usePageTitle";
-import { isMonitorId, useMonitor } from "../monitors/monitors";
+import { formatInterval, isMonitorId, useMonitor } from "../monitors/monitors";
 
 /**
  * One monitor: /monitors/:monitorId. The "View monitor" link in alert emails opens this page, so it
@@ -79,10 +79,4 @@ export function MonitorPage() {
       {content}
     </div>
   );
-}
-
-function formatInterval(seconds: number): string {
-  if (seconds < 60) return `Every ${seconds} seconds`;
-  const minutes = Math.round(seconds / 60);
-  return minutes === 1 ? "Every minute" : `Every ${minutes} minutes`;
 }

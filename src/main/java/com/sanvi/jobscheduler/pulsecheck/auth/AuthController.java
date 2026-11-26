@@ -59,9 +59,11 @@ public class AuthController {
 
     public record LoginRequest(@NotNull String email, @NotNull String password, Boolean rememberMe) {}
 
-    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt) {
-        static MeResponse of(AppUser user) {
-            return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt());
+    /** {@code monitorLimit}: how many monitors this account may have. */
+    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt, int monitorLimit) {
+        static MeResponse of(AppUser user, int monitorLimit) {
+            return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt(),
+                monitorLimit);
         }
     }
 
@@ -117,7 +119,7 @@ public class AuthController {
         SecurityContextHolder.setContext(context);
         securityContextRepository.saveContext(context, httpRequest, httpResponse);
         rotateCsrfToken(httpRequest, httpResponse);
-        return MeResponse.of(user);
+        return MeResponse.of(user, props.maxMonitorsPerUser());
     }
 
     @PostMapping("/logout")
@@ -142,7 +144,7 @@ public class AuthController {
             }
             throw AccountService.invalidCredentials();
         }
-        return MeResponse.of(user);
+        return MeResponse.of(user, props.maxMonitorsPerUser());
     }
 
     /** Confirms the email address with the token from the verification link. Works without being logged in. */

@@ -5,7 +5,7 @@ import { StatusBadge, type MonitorStatus } from "./StatusBadge";
 const cases: [MonitorStatus, string][] = [
   ["UP", "Up"],
   ["DOWN", "Down"],
-  ["UNKNOWN", "Unknown"],
+  ["UNKNOWN", "Checking"],
   ["PAUSED", "Paused"],
 ];
 

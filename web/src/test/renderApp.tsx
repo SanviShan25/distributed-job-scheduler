@@ -30,6 +30,7 @@ export const alice: User = {
   email: "alice@example.com",
   emailVerified: true,
   createdAt: "2026-11-20T10:00:00Z",
+  monitorLimit: 10,
 };
 
 export const loggedIn =

@@ -26,10 +26,10 @@ describe("route guards", () => {
   it.each(["/", "/login", "/signup"])(
     "sends logged-in users from %s to the dashboard",
     async (path) => {
-      fakeBackend({ "GET /api/auth/me": loggedIn() });
+      fakeBackend({ "GET /api/auth/me": loggedIn(), "GET /api/monitors": () => json(200, []) });
       const app = renderApp(path);
       expect(await screen.findByRole("heading", { level: 1, name: "Your websites" })).toBeVisible();
-      expect(screen.getByText("Your monitors will appear here.")).toBeVisible();
+      expect(await screen.findByRole("heading", { name: "Add your first website" })).toBeVisible();
       expect(app.location()).toBe("/dashboard");
     },
   );

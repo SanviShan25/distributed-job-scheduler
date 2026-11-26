@@ -1,6 +1,8 @@
 package com.sanvi.jobscheduler.pulsecheck.repo;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -44,6 +46,33 @@ public interface CheckResultRepository extends JpaRepository<CheckResult, Long> 
         where monitor_id = :monitorId and checked_at >= now() - interval '30 days'
         """, nativeQuery = true)
     UptimeStats uptime(@Param("monitorId") UUID monitorId);
+
+    /**
+     * The 24 h part of {@link #uptime} for several monitors in one query (for the monitor list): one row per
+     * monitor that has checks in the last 24 h. Scans at most 24 h of rows per monitor, on the
+     * (monitor_id, checked_at) index.
+     */
+    @Query(value = """
+        select
+          monitor_id as "monitorId",
+          round(100.0 * count(*) filter (where up) / count(*), 2) as "uptime24h",
+          round(avg(response_ms) filter (where up))::int as "avgResponseMs24h",
+          count(*) as "checks24h"
+        from check_results
+        where monitor_id in (:monitorIds) and checked_at >= now() - interval '24 hours'
+        group by monitor_id
+        """, nativeQuery = true)
+    List<DailyStats> last24h(@Param("monitorIds") Collection<UUID> monitorIds);
+
+    interface DailyStats {
+        UUID getMonitorId();
+
+        Double getUptime24h();
+
+        Integer getAvgResponseMs24h();
+
+        Long getChecks24h();
+    }
 
     interface UptimeStats {
         Double getUptime24h();
