@@ -609,3 +609,38 @@ runs while a transaction is active.
   minutes ago", local time zone in the tooltip) re-render every 15 s.
 - **Cards** are an `article` named by the website's name; the name is the only link, and its `::after`
   stretches over the card, so the whole card is clickable while screen readers hear one link.
+
+### Web app: adding, editing, pausing and deleting websites
+
+- **Add is a page** (`/monitors/new`), not a dialog: it has room on a phone, works with the back button,
+  and the dashboard and empty state link to it. Edit and delete are dialogs on the website's page.
+- **Addresses as people type them:** "example.com" becomes `https://example.com` (shown as "We'll check
+  https://example.com" before submitting). Digits after a colon are a port, so `example.com:8080` gets
+  `https://` too, while `ftp:` or `mailto:` are refused. The client catches only obvious mistakes (empty,
+  not a URL, not http(s), a username/password, no dot in the host); the server decides the rest. The name
+  is optional and defaults to the host.
+- **Backend reasons in plain words** (`monitors/errors.ts`): the client keeps the raw ProblemDetail
+  `title`/`detail` on `ApiError` (never displayed) and rewords them: private/reserved address, unknown host,
+  duplicate URL and invalid URL go on the address field; the limit and "Email not verified" (recognised by
+  title) go above the form, the latter with a "Send a new link" button. Internal addresses from the
+  backend's message (e.g. `127.0.0.1`) are not repeated.
+- **No optimistic updates.** Create, edit, pause/resume and delete all change things only the server
+  knows (status, a new check, the schedule), so buttons show progress (`loading`) and the screen updates
+  from the server's answer. Write responses have `uptime: null`; the cached figures are kept until the
+  next refresh. Edit sends only changed fields, so the URL (which restarts the status) is never re-sent by
+  accident. A delete that gets 404 counts as done; the deleted site's cached details are dropped only
+  after navigating away (dropping them while its page is visible would refetch and flash "not found").
+- **The first check arriving:** a check sets the monitor's `updatedAt` to its own time, so "a check is
+  owed" is `UNKNOWN` and enabled with `lastCheckedAt` missing or older than `updatedAt` (after adding,
+  resuming or a new address). The page then polls every 3 s for up to 2 minutes, shows "Checking your
+  website…", and then "Check complete: your website is up". One failed check leaves the status UNKNOWN
+  (DOWN needs two), shown as "The last check didn't succeed. We'll check once more…".
+- **Dialogs use native `<dialog>` + `showModal()`**: the browser makes the rest of the page inert (a real
+  focus trap, also for screen readers) and handles Escape, with no focus-trap script. Focus goes to
+  `[data-autofocus]` (Cancel in the delete dialog, so Enter doesn't delete) and returns to the button that
+  opened the dialog. Escape is ignored while saving; if the browser closes the dialog anyway (Chrome does
+  on repeated Escape), React's state follows. Dialogs are named by their title (`aria-labelledby`) and
+  described by their text. jsdom has no `showModal`, so the test setup has a small stand-in (open
+  attribute, Escape → cancel → close).
+- **After deleting,** the dashboard shows "Shop and its history have been deleted." from router state,
+  then clears that state so a reload or Back doesn't repeat it.

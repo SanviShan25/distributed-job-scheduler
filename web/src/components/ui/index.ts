@@ -2,6 +2,7 @@ export { Alert, type AlertProps } from "./Alert";
 export { Button, type ButtonProps } from "./Button";
 export { Card, type CardProps } from "./Card";
 export { Checkbox, type CheckboxProps } from "./Checkbox";
+export { Dialog, type DialogProps } from "./Dialog";
 export { Input, type InputProps } from "./Input";
 export { PasswordInput, type PasswordInputProps } from "./PasswordInput";
 export { Spinner, type SpinnerProps } from "./Spinner";

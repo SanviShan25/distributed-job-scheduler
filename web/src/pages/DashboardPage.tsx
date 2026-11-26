@@ -1,10 +1,11 @@
 import { Globe, Plus } from "lucide-react";
-import { useId } from "react";
-import { Link } from "react-router";
+import { useEffect, useId, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router";
 import { useCurrentUser } from "../auth/user";
 import { Alert, Button, ButtonLink, Card, StatusBadge } from "../components/ui";
 import { formatDateTime, formatRelative, useNow } from "../lib/time";
 import { usePageTitle } from "../lib/usePageTitle";
+import type { DashboardNotice } from "./MonitorPage";
 import {
   displayStatus,
   formatResponseTime,
@@ -15,13 +16,14 @@ import {
   type Monitor,
 } from "../monitors/monitors";
 
-export const ADD_WEBSITE_PATH = "/monitors/new";
+const ADD_WEBSITE_PATH = "/monitors/new";
 
 export function DashboardPage() {
   usePageTitle("Your websites");
   const { data: user } = useCurrentUser();
   const { data: monitors, error, isPending, isRefetching, refetch, dataUpdatedAt } = useMonitors();
   const now = useNow();
+  const notice = useNotice();
 
   const limit = user?.monitorLimit;
   const count = monitors?.length;
@@ -85,9 +87,25 @@ export function DashboardPage() {
         </div>
         {monitors && monitors.length > 0 && <AddWebsiteButton atLimit={atLimit} limit={limit} />}
       </div>
+      {notice && <Alert variant="success">{notice}</Alert>}
       {content}
     </div>
   );
+}
+
+/**
+ * A one-time message passed in router state (e.g. "Shop and its history have been deleted."). It is
+ * read once and then removed from the history entry, so reloading or going back doesn't repeat it.
+ */
+function useNotice(): string | undefined {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [notice] = useState(() => (location.state as Partial<DashboardNotice> | null)?.notice);
+  const hasState = location.state !== null;
+  useEffect(() => {
+    if (hasState) void navigate(".", { replace: true, state: null });
+  }, [hasState, navigate]);
+  return notice;
 }
 
 function AddWebsiteButton({ atLimit, limit }: { atLimit: boolean; limit: number | undefined }) {

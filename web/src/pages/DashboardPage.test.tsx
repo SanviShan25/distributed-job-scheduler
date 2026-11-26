@@ -1,30 +1,9 @@
 import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Monitor } from "../monitors/monitors";
 import { fakeBackend, json, problem } from "../test/fakeBackend";
+import { aMonitor as monitor } from "../test/monitors";
 import { alice, loggedIn, renderApp } from "../test/renderApp";
-
-let nextId = 1;
-
-function monitor(overrides: Partial<Monitor>): Monitor {
-  const id = `00000000-0000-4000-8000-${String(nextId++).padStart(12, "0")}`;
-  return {
-    id,
-    name: "Site",
-    url: "https://site.example.com/",
-    intervalSeconds: 300,
-    enabled: true,
-    status: "UP",
-    lastCheckedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
-    notifyOwner: true,
-    recipients: [],
-    createdAt: "2026-11-20T10:00:00Z",
-    updatedAt: "2026-11-20T10:00:00Z",
-    uptime: { last24h: 100, last7d: null, last30d: null, avgResponseMs24h: 245, checks24h: 288 },
-    ...overrides,
-  };
-}
 
 /** Turns off automatic retries so error states show at once (they wait 1 s, 2 s otherwise). */
 function noRetries(app: ReturnType<typeof renderApp>) {
