@@ -1,8 +1,12 @@
 package com.sanvi.jobscheduler.pulsecheck.api;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.domain.Page;
@@ -119,6 +123,15 @@ public class MonitorService {
         return results.uptime(monitorId);
     }
 
+    /** 24 h uptime and response time per monitor; monitors without checks in that window are absent. */
+    public Map<UUID, CheckResultRepository.DailyStats> last24h(Collection<UUID> monitorIds) {
+        if (monitorIds.isEmpty()) {
+            return Map.of();
+        }
+        return results.last24h(monitorIds).stream()
+            .collect(Collectors.toMap(CheckResultRepository.DailyStats::getMonitorId, s -> s));
+    }
+
     /** Partial update; null fields are unchanged. A new URL starts over from UNKNOWN. */
     @Transactional
     public Monitor update(UUID userId, UUID id, MonitorChanges changes) {
@@ -220,6 +233,37 @@ public class MonitorService {
             throw ApiProblems.badRequest("'from' must be before 'to'");
         }
         return results.findByMonitorIdAndCheckedAtGreaterThanEqualAndCheckedAtLessThan(id, start, end, pageable);
+    }
+
+    /** Chart windows: 24 h in 5-minute buckets (288 points), 7 d in 1-hour buckets (168 points). */
+    public enum ResponseTimeRange {
+        LAST_24H("24h", Duration.ofHours(24), Duration.ofMinutes(5)),
+        LAST_7D("7d", Duration.ofDays(7), Duration.ofHours(1));
+
+        public final String key;
+        public final Duration window;
+        public final Duration bucket;
+
+        ResponseTimeRange(String key, Duration window, Duration bucket) {
+            this.key = key;
+            this.window = window;
+            this.bucket = bucket;
+        }
+
+        public static ResponseTimeRange of(String key) {
+            for (ResponseTimeRange r : values()) {
+                if (r.key.equals(key)) {
+                    return r;
+                }
+            }
+            throw ApiProblems.badRequest("range must be 24h or 7d");
+        }
+    }
+
+    public List<CheckResultRepository.ResponseTimeBucket> responseTimes(UUID userId, UUID id,
+            ResponseTimeRange range) {
+        get(userId, id);
+        return results.responseTimes(id, range.window.toSeconds(), range.bucket.toSeconds());
     }
 
     public Page<Incident> incidents(UUID userId, UUID id, Pageable pageable) {

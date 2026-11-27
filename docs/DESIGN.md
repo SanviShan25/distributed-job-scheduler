@@ -443,7 +443,7 @@ runs while a transaction is active.
 - **Colours:** the brand colour is indigo, deliberately neither green nor red, so a button or link is
   never mistaken for a status. Status colours (UP green-700, DOWN red-700, UNKNOWN/PAUSED slate) are
   never the only signal: `StatusBadge` always shows a word and an icon with a different *shape* per
-  status (check-circle, warning triangle, question-circle, pause-circle), which works for colour-blind
+  status (check-circle, warning triangle, clock, pause-circle), which works for colour-blind
   users and in greyscale. Every text colour is at least 4.5:1 on its background; input borders use
   `line-strong` (4.8:1) because WCAG 1.4.11 requires 3:1 for the edges of form controls, which the usual
   light-grey border does not meet.
@@ -472,8 +472,8 @@ runs while a transaction is active.
   will after login), as DESIGN's CSRF section asks. If the cookie is missing anyway, the client fetches
   one first; a 403 with `"code": "csrf_invalid"` (e.g. the cookie was cleared mid-session) gets one
   fresh token and one retry. Other 403s ("Your password is incorrect") are never retried.
-- **Not every 401 means "session expired".** Login answers a wrong password with 401, and `GET
-  /api/auth/me` answers "not logged in" with 401. Callers say so with `on401: "error"`; every other 401
+- **Not every 401 means "session expired".** Login answers a wrong password with 401. Callers say so
+  with `on401: "error"`; every other 401
   ends the session in the app: the cached user is set to `null` and every other cached query is removed
   (no private data stays in memory), and the route guard sends the user to `/login?next=<page>` with
   "Your session has ended. Please log in again." A logout that gets 401 counts as a successful logout.
@@ -590,3 +590,116 @@ runs while a transaction is active.
   which had no page; it now shows the monitor's name, status, address and check interval, "Website not
   found" for unknown or other people's monitors, and sends logged-out visitors to log in and back.
   `web/src/emailLinks.test.tsx` renders each email path and fails on "Page not found".
+
+### Web app: dashboard
+
+- **One request for all cards.** `GET /api/monitors` now includes each monitor's last-24 h uptime and
+  average response time, computed by one grouped SQL query over at most 24 h of rows per monitor (the
+  `(monitor_id, checked_at)` index), instead of the page calling `GET /api/monitors/{id}` once per card.
+  The list leaves 7 d / 30 d null: a 30-day scan for every card every 30 seconds is not worth it for
+  figures the card does not show. `GET /api/auth/me` includes `monitorLimit`, so "3 of 10 websites" and
+  the disabled "Add website" button follow the server setting instead of a number copied into the app.
+- **Status words for people:** UNKNOWN (new, resumed or a changed URL, not checked yet) is shown as
+  "Checking" with a clock icon, and a paused monitor is always "Paused", whatever its last status was.
+- **Order:** down websites first (they need attention), then by name (case-insensitive, numbers in
+  order, so "Site 2" comes before "Site 10").
+- **Refreshing:** every 30 s with TanStack Query's `refetchInterval`, which already pauses while the tab
+  is hidden (`refetchIntervalInBackground` is false by default) and refetches on return when the data is
+  stale. If a refresh fails, the cards stay and a warning says how old they are. Relative times ("2
+  minutes ago", local time zone in the tooltip) re-render every 15 s.
+- **Cards** are an `article` named by the website's name; the name is the only link, and its `::after`
+  stretches over the card, so the whole card is clickable while screen readers hear one link.
+
+### Web app: adding, editing, pausing and deleting websites
+
+- **Add is a page** (`/monitors/new`), not a dialog: it has room on a phone, works with the back button,
+  and the dashboard and empty state link to it. Edit and delete are dialogs on the website's page.
+- **Addresses as people type them:** "example.com" becomes `https://example.com` (shown as "We'll check
+  https://example.com" before submitting). Digits after a colon are a port, so `example.com:8080` gets
+  `https://` too, while `ftp:` or `mailto:` are refused. The client catches only obvious mistakes (empty,
+  not a URL, not http(s), a username/password, no dot in the host); the server decides the rest. The name
+  is optional and defaults to the host.
+- **Backend reasons in plain words** (`monitors/errors.ts`): the client keeps the raw ProblemDetail
+  `title`/`detail` on `ApiError` (never displayed) and rewords them: private/reserved address, unknown host,
+  duplicate URL and invalid URL go on the address field; the limit and "Email not verified" (recognised by
+  title) go above the form, the latter with a "Send a new link" button. Internal addresses from the
+  backend's message (e.g. `127.0.0.1`) are not repeated.
+- **No optimistic updates.** Create, edit, pause/resume and delete all change things only the server
+  knows (status, a new check, the schedule), so buttons show progress (`loading`) and the screen updates
+  from the server's answer. Write responses have `uptime: null`; the cached figures are kept until the
+  next refresh. Edit sends only changed fields, so the URL (which restarts the status) is never re-sent by
+  accident. A delete that gets 404 counts as done; the deleted site's cached details are dropped only
+  after navigating away (dropping them while its page is visible would refetch and flash "not found").
+- **The first check arriving:** a check sets the monitor's `updatedAt` to its own time, so "a check is
+  owed" is `UNKNOWN` and enabled with `lastCheckedAt` missing or older than `updatedAt` (after adding,
+  resuming or a new address). The page then polls every 3 s for up to 2 minutes, shows "Checking your
+  website…", and then "Check complete: your website is up". One failed check leaves the status UNKNOWN
+  (DOWN needs two), shown as "The last check didn't succeed. We'll check once more…".
+- **Dialogs use native `<dialog>` + `showModal()`**: the browser makes the rest of the page inert (a real
+  focus trap, also for screen readers) and handles Escape, with no focus-trap script. Focus goes to
+  `[data-autofocus]` (Cancel in the delete dialog, so Enter doesn't delete) and returns to the button that
+  opened the dialog. Escape is ignored while saving; if the browser closes the dialog anyway (Chrome does
+  on repeated Escape), React's state follows. Dialogs are named by their title (`aria-labelledby`) and
+  described by their text. jsdom has no `showModal`, so the test setup has a small stand-in (open
+  attribute, Escape → cancel → close).
+- **After deleting,** the dashboard shows "Shop and its history have been deleted." from router state,
+  then clears that state so a reload or Back doesn't repeat it.
+
+### Web app: monitor detail page
+
+- **Response times are bucketed in SQL.** `GET /api/monitors/{id}/response-times?range=24h|7d` returns 5-minute
+  buckets for 24 h (288) or 1-hour buckets for 7 d (168), using `date_bin` against a fixed origin so a bucket covers
+  the same minutes on every refresh, and `generate_series` so empty buckets are listed (0 checks, null average) and
+  show as gaps rather than a line drawn across missing data. One range scan on `(monitor_id, checked_at)`; averages
+  are of successful checks only, like the uptime figures. Sending raw checks instead would be up to 10,080 rows for
+  a week at one-minute intervals.
+- **Chart library: Recharts 3** (3.10.1; 3.11 was under two weeks old). It renders SVG through React, so styles
+  are set through the DOM (allowed by `style-src 'self'`); it injects no `<style>` elements and has no `eval`.
+  Checked in the built app served by Spring Boot with the real CSP in headless Chrome: no violations, no console
+  errors. It is loaded lazily (`React.lazy`), so its ~110 kB gzipped chunk is only fetched on this page. Its
+  keyboard layer is on: the chart is focusable and the arrow keys move the tooltip; a one-sentence summary
+  ("Average 196 ms … 14 checks failed.") is shown above the chart and is also the SVG's `<desc>`.
+- **Colours on the chart** are the design tokens: the line (brand-600, 6.3:1 on white) and failure markers
+  (down-700, 6.5:1) exceed the 3:1 WCAG asks of graphics, axis text is ink-muted (7.6:1), and failures are
+  triangles, not only red. Failure markers are dots of a second, stroke-less line over the same data: a `Scatter`
+  with its own data made the shared tooltip show the wrong bucket.
+- **Causes in plain words** (`monitors/history.ts`): the checker's operator-facing reasons ("HTTP 503", "timed out
+  after 10s", "TLS error: …") become sentences ("The website said it was temporarily unavailable."); no status
+  codes or internal addresses are shown. Outage durations are rounded to the minute like the emails, and an ongoing
+  outage keeps counting between refreshes ("Down for 5 minutes so far").
+- **Paging:** outages (10 per page) and checks (20) have Newer/Older buttons that are `aria-disabled` at the ends
+  rather than `disabled`, so focus stays on the button just pressed. Only the first page refreshes by itself;
+  older pages would shift under the reader.
+- **Alert emails:** the owner's address plus extra recipients, with their state in words (Waiting for
+  confirmation / Receiving alerts / Unsubscribed). Add (hidden at 5 active), remove, and resend for waiting people.
+  If the owner unsubscribed through an email link, "Send me alerts again" sets `notifyOwner` back. After removing
+  someone, focus moves to the confirmation message, since the focused button has gone.
+- **The website link** opens in a new tab with `rel="noopener noreferrer"` and says so to screen readers; only
+  `http(s)` addresses become links.
+- **Titled cards are named regions** (`aria-labelledby` on the `<section>`), so screen-reader users can jump
+  between "Uptime", "Response time", "Outages", "Recent checks" and "Alert emails".
+- **Screen readers and the chart:** Recharts' tooltip is not a live region, so while the chart has keyboard
+  focus the period under the arrow keys ("20:10–20:15: average 200 ms, slowest 280 ms, 2 failed checks.") is
+  also written to a polite live region outside the SVG (via `useActiveTooltipDataPoints`); mouse hovering stays
+  silent. The SVG's description ends with "Use the left and right arrow keys to hear each time period."
+- **Status changes while the page is open** (it refreshes by itself) are announced politely: "Shop is down.",
+  "Shop is back up.", "Checks paused.". First checks after adding, resuming or a new address are already
+  announced by the "Checking your website…" message, so they are not repeated.
+- **Checked with axe-core** (WCAG 2.2 AA and best-practice rules) in the built app in headless Chrome: login,
+  sign-up, dashboard, add website, account settings and the detail page (24 h and 7 d) have no violations, no CSP
+  violations and no console messages. Graphics contrast, which axe does not check, was computed: line 6.3:1,
+  failure markers 6.5:1, axis line 4.8:1. Markers and line are nearly the same luminance, so they differ by
+  shape and position (white-outlined triangles on the baseline), never colour alone.
+
+### Web app: polish
+
+- **`GET /api/auth/me` answers 204 No Content when nobody is logged in** (no session, an ended session, or an
+  account deleted while its session was alive), instead of 401. "Nobody" is a normal answer to "who is logged
+  in?", and browsers log every 401 as a red console error, so each logged-out visit looked broken. The endpoint
+  is public in the session chain (`permitAll`); every other `/api/**` endpoint still answers 401 without a
+  session, and the client still treats those as an ended session.
+- **Autofill:** sign-in and sign-up use `email` + `current-password`/`new-password`. Email fields turn off
+  automatic capitals, autocorrect and spellcheck on phones (set by `Input` for `type="email"`). The
+  change-password form carries a hidden `autocomplete="username"` field with the account's address, so a
+  password manager knows which saved login to update. A test checks every account form's attributes.
+

@@ -121,7 +121,9 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/verify",
                     "/api/auth/forgot-password", "/api/auth/reset-password").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/auth/csrf").permitAll()
+                // "Who is logged in?" has a normal answer for nobody: 204 (see AuthController.me), not a 401
+                // that browsers log as an error on every visit by a logged-out user.
+                .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/api/auth/me").permitAll()
                 .anyRequest().authenticated());
         return http.build();
     }

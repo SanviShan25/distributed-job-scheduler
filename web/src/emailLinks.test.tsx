@@ -1,6 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { fakeBackend, json } from "./test/fakeBackend";
+import { aMonitor } from "./test/monitors";
 import { loggedIn, renderApp } from "./test/renderApp";
 
 /**
@@ -20,15 +21,14 @@ describe("links in emails", () => {
       "GET /api/auth/me": loggedIn(),
       "POST /api/auth/verify": () => json(200, { message: "Your email address is verified." }),
       "GET /api/monitors/3f6c2a10-5b7e-4c1d-9e2f-8a9b0c1d2e3f": () =>
-        json(200, {
-          id: "3f6c2a10-5b7e-4c1d-9e2f-8a9b0c1d2e3f",
-          name: "Shop",
-          url: "https://shop.example.com/",
-          intervalSeconds: 60,
-          enabled: true,
-          status: "UP",
-          lastCheckedAt: null,
-        }),
+        json(
+          200,
+          aMonitor({
+            id: "3f6c2a10-5b7e-4c1d-9e2f-8a9b0c1d2e3f",
+            name: "Shop",
+            lastCheckedAt: null,
+          }),
+        ),
     });
     renderApp(path);
 

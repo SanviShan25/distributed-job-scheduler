@@ -110,20 +110,28 @@ class AuthSessionIntegrationTest extends AbstractIntegrationTest {
 
         browser.perform(get("/api/auth/me")).andExpect(status().isOk())
             .andExpect(jsonPath("$.email").value("ann@example.com"))
+            .andExpect(jsonPath("$.monitorLimit").value(10))
             .andExpect(jsonPath("$.passwordHash").doesNotExist());
 
         String sessionBeforeLogout = browser.sessionCookie();
         browser.perform(post("/api/auth/logout")).andExpect(status().isNoContent());
 
-        browser.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        browser.perform(get("/api/auth/me")).andExpect(status().isNoContent());
         // Even replaying the old cookie does not work: the session is gone from Redis.
         browser.cookies.put(SESSION_COOKIE, sessionBeforeLogout);
-        browser.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        browser.perform(get("/api/auth/me")).andExpect(status().isNoContent());
     }
 
     @Test
-    void meWithoutASessionIs401() throws Exception {
+    void meWithoutASessionIs204NotAnError() throws Exception {
         new Browser().perform(get("/api/auth/me"))
+            .andExpect(status().isNoContent())
+            .andExpect(content().string(""));
+    }
+
+    @Test
+    void otherEndpointsStill401WithoutASession() throws Exception {
+        new Browser().perform(get("/api/monitors"))
             .andExpect(status().isUnauthorized())
             .andExpect(jsonPath("$.detail").value("Please log in"));
     }
@@ -206,7 +214,7 @@ class AuthSessionIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(newSession).isNotEqualTo(oldSession);
         mvc.perform(get("/api/auth/me").cookie(new Cookie(SESSION_COOKIE, oldSession)))
-            .andExpect(status().isUnauthorized());
+            .andExpect(status().isNoContent());
         mvc.perform(get("/api/auth/me").cookie(new Cookie(SESSION_COOKIE, newSession)))
             .andExpect(status().isOk());
     }

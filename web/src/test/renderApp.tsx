@@ -5,7 +5,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import type { User } from "../auth/user";
 import { createQueryClient } from "../lib/queryClient";
 import { routes } from "../routes";
-import { json, problem, type Handler } from "./fakeBackend";
+import { json, noContent, type Handler } from "./fakeBackend";
 
 /** Renders the whole app at a path, as the browser would load it. */
 export function renderApp(path: string) {
@@ -30,6 +30,7 @@ export const alice: User = {
   email: "alice@example.com",
   emailVerified: true,
   createdAt: "2026-11-20T10:00:00Z",
+  monitorLimit: 10,
 };
 
 export const loggedIn =
@@ -37,4 +38,5 @@ export const loggedIn =
   () =>
     json(200, user);
 
-export const loggedOut: Handler = () => problem(401, "Please log in");
+/** GET /api/auth/me when nobody is logged in: 204 No Content, like the backend. */
+export const loggedOut: Handler = () => noContent();

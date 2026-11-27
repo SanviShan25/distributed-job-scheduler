@@ -1,9 +1,4 @@
-import {
-  CircleCheck,
-  CirclePause,
-  CircleQuestionMark,
-  TriangleExclamationPoint,
-} from "lucide-react";
+import { CircleCheck, CirclePause, Clock, TriangleExclamationPoint } from "lucide-react";
 import { cn } from "../../lib/cn";
 
 export type MonitorStatus = "UP" | "DOWN" | "UNKNOWN" | "PAUSED";
@@ -17,9 +12,10 @@ const statuses = {
     icon: TriangleExclamationPoint,
     classes: "border-down-200 bg-down-50 text-down-700",
   },
+  // Not checked yet (new, resumed or with a new URL): the first check is on its way.
   UNKNOWN: {
-    label: "Unknown",
-    icon: CircleQuestionMark,
+    label: "Checking",
+    icon: Clock,
     classes: "border-unknown-200 bg-unknown-50 text-unknown-700",
   },
   PAUSED: {

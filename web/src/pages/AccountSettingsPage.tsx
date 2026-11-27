@@ -19,7 +19,7 @@ export function AccountSettingsPage() {
           <dd className="font-semibold break-all">{user?.email}</dd>
         </dl>
       </Card>
-      <ChangePasswordCard />
+      <ChangePasswordCard email={user?.email} />
       <DeleteAccountCard />
     </div>
   );
@@ -27,7 +27,7 @@ export function AccountSettingsPage() {
 
 const changeIds = { currentPassword: "current-password", newPassword: "new-password" };
 
-function ChangePasswordCard() {
+function ChangePasswordCard({ email }: { email: string | undefined }) {
   const change = useChangePassword();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -75,6 +75,11 @@ function ChangePasswordCard() {
           <Alert variant="error">{change.error.message}</Alert>
         )}
         <form noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
+          {/*
+            The account a password manager should update. Without a username in the form, it can't tell
+            which saved login the new password belongs to. Hidden: the address is shown above.
+          */}
+          {email && <input type="email" autoComplete="username" value={email} readOnly hidden />}
           <PasswordInput
             id={changeIds.currentPassword}
             label="Current password"

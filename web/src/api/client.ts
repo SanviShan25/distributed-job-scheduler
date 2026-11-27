@@ -40,17 +40,29 @@ export class ApiError extends Error {
   readonly retryAfterSeconds: number | undefined;
   /** For 400 validation errors: field name to the backend's message (for logging, not display). */
   readonly fieldErrors: Readonly<Record<string, string>>;
+  /**
+   * The backend's ProblemDetail title and detail, unchanged. For recognising a specific error and
+   * rewording it (see monitors/errors.ts); `message` is what may be shown as it is.
+   */
+  readonly problemTitle: string | undefined;
+  readonly problemDetail: string | undefined;
 
   constructor(
     message: string,
     status: number,
-    extra: { retryAfterSeconds?: number; fieldErrors?: Record<string, string> } = {},
+    extra: {
+      retryAfterSeconds?: number;
+      fieldErrors?: Record<string, string>;
+      problem?: ProblemDetail;
+    } = {},
   ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.retryAfterSeconds = extra.retryAfterSeconds;
     this.fieldErrors = extra.fieldErrors ?? {};
+    this.problemTitle = extra.problem?.title;
+    this.problemDetail = extra.problem?.detail;
   }
 }
 
@@ -61,8 +73,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /**
    * What a 401 means. "session-expired" (default): the session ended, so the user is sent to log in.
-   * "error": a normal answer the caller handles, e.g. wrong password at login, or "not logged in" from
-   * GET /api/auth/me.
+   * "error": a normal answer the caller handles, e.g. wrong password at login. (GET /api/auth/me answers
+   * "nobody is logged in" with 204, not 401.)
    */
   on401?: "session-expired" | "error";
 }
@@ -251,14 +263,14 @@ function toApiError(response: Response, problem: ProblemDetail): ApiError {
   }
 
   const byTitle = problem.title === undefined ? undefined : MESSAGES_BY_TITLE[problem.title];
-  if (byTitle !== undefined) return new ApiError(byTitle, status, { fieldErrors });
+  if (byTitle !== undefined) return new ApiError(byTitle, status, { fieldErrors, problem });
 
   const detail = problem.detail?.trim();
   const message =
     detail && detail.length <= 300 && !TECHNICAL_DETAIL.test(detail)
       ? detail
       : (FALLBACK_MESSAGES[status] ?? "Something went wrong. Please try again.");
-  return new ApiError(message, status, { fieldErrors });
+  return new ApiError(message, status, { fieldErrors, problem });
 }
 
 function retryAfterSeconds(response: Response, problem: ProblemDetail): number | undefined {

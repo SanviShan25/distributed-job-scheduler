@@ -4,6 +4,7 @@ import { AppLayout } from "./components/layout/AppLayout";
 import { AuthLayout } from "./components/layout/AuthLayout";
 import { RootLayout } from "./components/layout/RootLayout";
 import { AccountSettingsPage } from "./pages/AccountSettingsPage";
+import { AddMonitorPage } from "./pages/AddMonitorPage";
 import { CheckInboxPage } from "./pages/CheckInboxPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
@@ -67,6 +68,7 @@ export const routes: RouteObject[] = [
             element: <AppLayout />,
             children: [
               { path: "dashboard", element: <DashboardPage /> },
+              { path: "monitors/new", element: <AddMonitorPage /> },
               // Alert emails link here ("View monitor").
               { path: "monitors/:monitorId", element: <MonitorPage /> },
               { path: "settings/account", element: <AccountSettingsPage /> },

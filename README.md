@@ -21,7 +21,7 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 - [Failure scenarios handled](#failure-scenarios-handled)
 - [Design trade-offs](#design-trade-offs)
 - [Quick start (Docker Compose)](#quick-start-docker-compose)
-- [PulseCheck (in progress)](#pulsecheck-in-progress)
+- [PulseCheck](#pulsecheck)
 - [Web app (frontend)](#web-app-frontend)
 - [Project structure](#project-structure)
 - [Running from an IDE](#running-from-an-ide)
@@ -207,11 +207,21 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 
 > **Upgrading an existing deployment:** `POSTGRES_PASSWORD` only takes effect when the `pgdata` volume is first created. If you already have a volume from the old setup (password `jobs`), either set `POSTGRES_PASSWORD=jobs` in `.env` or recreate the volume. Flyway applies migrations V2–V4 on startup.
 
-## PulseCheck (in progress)
+## PulseCheck
 
 **PulseCheck** is a website uptime monitor for non-technical users, built on top of this scheduler. The scheduler is the engine: each monitor is a recurring `HTTP_CHECK` schedule, and every check is an ordinary job, with the same retries, leases and recovery.
 
-**Status:** the backend is complete: user accounts, monitors, HTTP checks, status, incidents, uptime, SSRF protection, and real emails (verification, password reset, DOWN/UP alerts) sent through [Resend](https://resend.com). The [web app](#web-app-frontend) has the account pages (sign-up, log in, email verification, password reset, account settings) and a page per monitor; the dashboard is still a placeholder, so monitors are created through the API for now.
+**Status:** complete end to end. The backend has user accounts, monitors, HTTP checks, status, incidents, uptime, SSRF protection, and real emails (verification, password reset, DOWN/UP alerts, alert-recipient confirmations) sent through [Resend](https://resend.com). The [web app](#web-app-frontend) covers everything a website owner needs, with no API calls by hand.
+
+**Using the website** (http://localhost:8080 with Docker Compose)
+
+1. **Sign up**, then click the link in the verification email (with the default `logging` email provider, the link is in the worker log: `docker compose logs worker | grep verify-email`).
+2. **Add a website** from the dashboard: type an address like `example.com` (PulseCheck adds `https://`), an optional name, and how often to check. The first check runs straight away and the page shows it arriving.
+3. **The dashboard** shows a card per website: status (Up, Down, Checking or Paused), uptime and average response time for the last 24 hours, and when it was last checked. Down websites come first. It refreshes every 30 seconds.
+4. **A website's page** has its address (opens in a new tab), uptime for 24 hours, 7 days and 30 days, a response-time chart for the last 24 hours or 7 days, its outages ("Down for 12 minutes", with the cause in plain words), recent checks, and who gets alert emails. From there you can **edit**, **pause/resume** or **delete** it, and **add up to 5 people** to its alerts (they confirm by email first), resend their confirmation or remove them.
+5. **Account settings** (menu at the top right): change password or delete the account.
+
+Times are shown in your own time zone. The website is keyboard- and screen-reader-accessible (checked with axe-core) and runs under a strict Content-Security-Policy.
 
 **How monitoring works**
 
@@ -227,7 +237,7 @@ Postgres, Redis and the API's actuator port (9091) are **not published** to the 
 - Each DOWN and UP is emailed **exactly once**, even if checks are retried or a worker crashes: the alert is queued in the same database transaction that opens or closes the incident.
 - **Flapping:** at most 6 alert emails per monitor per hour. The 6th is a single "alerts paused for this monitor for an hour" note; later changes are skipped (and logged) until the hour is over.
 - **Who gets alerts:** your account's address once it is verified, plus up to 5 **extra recipients** per monitor. Each extra address is sent a confirmation email first and gets alerts only after clicking "Yes, send me alerts" (double opt-in). Confirmation emails are limited to 10 per account per hour and 3 per address per day.
-- **Every alert has an unsubscribe link**, plus the `List-Unsubscribe` headers that give Gmail and others a one-click Unsubscribe button. It needs no login and stops only that address's alerts for that one monitor. Your own alerts for a monitor can be turned back on with `PATCH /api/monitors/{id}` `{"notifyOwner": true}`.
+- **Every alert has an unsubscribe link**, plus the `List-Unsubscribe` headers that give Gmail and others a one-click Unsubscribe button. It needs no login and stops only that address's alerts for that one monitor. Your own alerts for a monitor can be turned back on from its page ("Send me alerts again"), or with `PATCH /api/monitors/{id}` `{"notifyOwner": true}`.
 - Emails are sent by the workers as ordinary `SEND_EMAIL` jobs, with retries. One-time links are stored only as hashes, and the link token inside an email job is deleted from the job as soon as it is sent.
 
 **Accounts and security**
@@ -252,7 +262,7 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | `POST /api/auth/login` | anyone | `{email, password, rememberMe?}`; starts a session |
 | `POST /api/auth/forgot-password` | anyone | `{email}`; always the same answer |
 | `POST /api/auth/reset-password` | anyone | `{token, newPassword}`; logs out every session |
-| `GET /api/auth/me` | logged in | The current user |
+| `GET /api/auth/me` | anyone | The current user, with `monitorLimit` (how many monitors the account may have); `204 No Content` when nobody is logged in |
 | `POST /api/auth/logout` | logged in | Ends the session |
 | `POST /api/auth/resend-verification` | logged in | New verification link (3/hour) |
 | `POST /api/auth/change-password` | logged in | `{currentPassword, newPassword}`; logs out other sessions |
@@ -263,13 +273,14 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | Method & path | Description |
 |---|---|
 | `POST /api/monitors` | Create: `name`, `url`, `intervalSeconds` (60/300/900/3600), optional `notifyOwner` (default `true`) |
-| `GET /api/monitors` | List my monitors, each with `notifyOwner` and its `recipients` (email + `PENDING`/`CONFIRMED`/`UNSUBSCRIBED`) |
+| `GET /api/monitors` | List my monitors, each with `notifyOwner`, its `recipients` (email + `PENDING`/`CONFIRMED`/`UNSUBSCRIBED`) and its last-24 h `uptime` (`last24h`, `avgResponseMs24h`, `checks24h`; `last7d`/`last30d` are null here) |
 | `GET /api/monitors/{id}` | One monitor, with its recipients and uptime summary |
 | `PATCH /api/monitors/{id}` | Change name, URL, interval or `notifyOwner`. Changing the URL closes any open incident without an UP alert |
 | `POST /api/monitors/{id}/pause`, `/resume` | Stop / restart checks |
 | `DELETE /api/monitors/{id}` | Delete the monitor, its history and its schedule |
 | `GET /api/monitors/{id}/checks?from=&to=&page=&size=` | Check history, newest first (`from`/`to` are ISO-8601) |
-| `GET /api/monitors/{id}/incidents` | Incidents, newest first |
+| `GET /api/monitors/{id}/incidents?page=&size=` | Incidents, newest first, each with `durationSeconds`, `ongoing` and `cause` |
+| `GET /api/monitors/{id}/response-times?range=24h\|7d` | Response times for a chart, bucketed in SQL: 5-minute buckets for `24h` (default), 1-hour for `7d`; every bucket listed oldest first with `checks`, `failures`, `avgResponseMs` and `maxResponseMs` (averages of successful checks; null when there were none) |
 | `POST /api/monitors/{id}/recipients` | `{email}`: add an extra recipient (max 5); sends them a confirmation email |
 | `POST /api/monitors/{id}/recipients/{rid}/resend` | New confirmation email for a pending recipient (the old link stops working) |
 | `DELETE /api/monitors/{id}/recipients/{rid}` | Remove a recipient |
@@ -281,7 +292,7 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | `/alert-recipients/confirm?token=` | Confirm an extra recipient |
 | `/alert-recipients/unsubscribe?token=` | Stop alerts for one monitor; also the one-click `List-Unsubscribe` target |
 
-The verification and password-reset links point to `/verify-email` and `/reset-password` on the future web app (`PULSECHECK_APP_BASE_URL`). Until it exists, copy the token from the link and `POST` it to `/api/auth/verify` or `/api/auth/reset-password`.
+The verification and password-reset links open `/verify-email` and `/reset-password` in the web app (at `PULSECHECK_APP_BASE_URL`), and "View monitor" in alerts opens the website's page.
 
 **Sending real email**
 
@@ -450,7 +461,7 @@ npm run build          # type-check + production build into web/dist
 │       ├── auth/         current user, session end, route guards, account calls
 │       ├── components/   UI kit (ui/) and page layouts (layout/)
 │       ├── lib/          small helpers (forms, query client, page titles)
-│       ├── monitors/     monitor queries
+│       ├── monitors/     monitor queries, history (checks, outages, chart), alert recipients
 │       ├── pages/        one component per route, tests next to them
 │       └── test/         fake backend and render helpers for tests
 ├── docs/DESIGN.md       design decisions

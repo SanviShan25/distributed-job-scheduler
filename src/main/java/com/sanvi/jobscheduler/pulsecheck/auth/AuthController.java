@@ -59,9 +59,11 @@ public class AuthController {
 
     public record LoginRequest(@NotNull String email, @NotNull String password, Boolean rememberMe) {}
 
-    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt) {
-        static MeResponse of(AppUser user) {
-            return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt());
+    /** {@code monitorLimit}: how many monitors this account may have. */
+    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt, int monitorLimit) {
+        static MeResponse of(AppUser user, int monitorLimit) {
+            return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt(),
+                monitorLimit);
         }
     }
 
@@ -117,7 +119,7 @@ public class AuthController {
         SecurityContextHolder.setContext(context);
         securityContextRepository.saveContext(context, httpRequest, httpResponse);
         rotateCsrfToken(httpRequest, httpResponse);
-        return MeResponse.of(user);
+        return MeResponse.of(user, props.maxMonitorsPerUser());
     }
 
     @PostMapping("/logout")
@@ -131,8 +133,16 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * The logged-in user, or 204 No Content when nobody is logged in (no session, an ended session, or an
+     * account deleted while its session was alive). Not being logged in is a normal answer to this question,
+     * so it is not a 401, which browsers log as an error on every visit by a logged-out user.
+     */
     @GetMapping("/me")
-    public MeResponse me(@AuthenticationPrincipal SessionUser principal, HttpServletRequest request) {
+    public ResponseEntity<MeResponse> me(@AuthenticationPrincipal SessionUser principal, HttpServletRequest request) {
+        if (principal == null) {
+            return ResponseEntity.noContent().build();
+        }
         AppUser user = users.findById(principal.id()).orElse(null);
         if (user == null) {
             // The account was deleted while this session was alive.
@@ -140,9 +150,10 @@ public class AuthController {
             if (session != null) {
                 session.invalidate();
             }
-            throw AccountService.invalidCredentials();
+            SecurityContextHolder.clearContext();
+            return ResponseEntity.noContent().build();
         }
-        return MeResponse.of(user);
+        return ResponseEntity.ok(MeResponse.of(user, props.maxMonitorsPerUser()));
     }
 
     /** Confirms the email address with the token from the verification link. Works without being logged in. */

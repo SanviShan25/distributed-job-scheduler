@@ -83,6 +83,13 @@ public class MonitorController {
             return new UptimeView(s.getUptime24h(), s.getUptime7d(), s.getUptime30d(), s.getAvgResponseMs24h(),
                 s.getChecks24h());
         }
+
+        /** The list's summary: 24 h figures only (7 d / 30 d null); no checks in 24 h gives nulls and 0. */
+        static UptimeView of24h(CheckResultRepository.DailyStats s) {
+            return s == null
+                ? new UptimeView(null, null, null, null, 0L)
+                : new UptimeView(s.getUptime24h(), null, null, s.getAvgResponseMs24h(), s.getChecks24h());
+        }
     }
 
     public record MonitorView(UUID id, String name, String url, int intervalSeconds, boolean enabled,
@@ -131,11 +138,15 @@ public class MonitorController {
             .body(view(created, null));
     }
 
+    /** Each monitor includes its last-24 h uptime and average response time ({@code last7d}/{@code last30d} null). */
     @GetMapping
     public List<MonitorView> list() {
         List<Monitor> mine = monitors.list(currentUser.id());
-        var byMonitor = recipients.listFor(mine.stream().map(Monitor::getId).toList());
-        return mine.stream().map(m -> MonitorView.of(m, byMonitor.getOrDefault(m.getId(), List.of()), null)).toList();
+        List<UUID> ids = mine.stream().map(Monitor::getId).toList();
+        var byMonitor = recipients.listFor(ids);
+        var daily = monitors.last24h(ids);
+        return mine.stream().map(m -> MonitorView.of(m, byMonitor.getOrDefault(m.getId(), List.of()),
+            UptimeView.of24h(daily.get(m.getId())))).toList();
     }
 
     /** Includes the uptime summary (24 h / 7 d / 30 d and average response time). */
@@ -199,6 +210,29 @@ public class MonitorController {
             @RequestParam(defaultValue = "50") @Min(1) @Max(100) int size) {
         var pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("checkedAt"), Sort.Order.desc("id")));
         return PageResponse.of(monitors.checks(currentUser.id(), id, from, to, pageable).map(CheckView::of));
+    }
+
+    public record ResponseTimeBucketView(Instant start, long checks, long failures, Integer avgResponseMs,
+        Integer maxResponseMs) {
+        static ResponseTimeBucketView of(CheckResultRepository.ResponseTimeBucket b) {
+            return new ResponseTimeBucketView(Instant.ofEpochSecond(b.getStartEpochSecond()), b.getChecks(),
+                b.getFailures(), b.getAvgResponseMs(), b.getMaxResponseMs());
+        }
+    }
+
+    public record ResponseTimesView(String range, long bucketSeconds, List<ResponseTimeBucketView> buckets) {}
+
+    /**
+     * Response times for a chart, bucketed in SQL: {@code range=24h} (default) gives 5-minute buckets,
+     * {@code range=7d} 1-hour buckets. Every bucket is listed oldest first; empty ones have 0 checks and a null
+     * average. Averages are of successful checks only.
+     */
+    @GetMapping("/{id}/response-times")
+    public ResponseTimesView responseTimes(@PathVariable UUID id,
+            @RequestParam(defaultValue = "24h") String range) {
+        MonitorService.ResponseTimeRange r = MonitorService.ResponseTimeRange.of(range);
+        var buckets = monitors.responseTimes(currentUser.id(), id, r).stream().map(ResponseTimeBucketView::of).toList();
+        return new ResponseTimesView(r.key, r.bucket.toSeconds(), buckets);
     }
 
     /** Incidents, newest first. */
