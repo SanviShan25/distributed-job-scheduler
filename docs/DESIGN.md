@@ -644,3 +644,37 @@ runs while a transaction is active.
   attribute, Escape → cancel → close).
 - **After deleting,** the dashboard shows "Shop and its history have been deleted." from router state,
   then clears that state so a reload or Back doesn't repeat it.
+
+### Web app: monitor detail page
+
+- **Response times are bucketed in SQL.** `GET /api/monitors/{id}/response-times?range=24h|7d` returns 5-minute
+  buckets for 24 h (288) or 1-hour buckets for 7 d (168), using `date_bin` against a fixed origin so a bucket covers
+  the same minutes on every refresh, and `generate_series` so empty buckets are listed (0 checks, null average) and
+  show as gaps rather than a line drawn across missing data. One range scan on `(monitor_id, checked_at)`; averages
+  are of successful checks only, like the uptime figures. Sending raw checks instead would be up to 10,080 rows for
+  a week at one-minute intervals.
+- **Chart library: Recharts 3** (3.10.1; 3.11 was under two weeks old). It renders SVG through React, so styles
+  are set through the DOM (allowed by `style-src 'self'`); it injects no `<style>` elements and has no `eval`.
+  Checked in the built app served by Spring Boot with the real CSP in headless Chrome: no violations, no console
+  errors. It is loaded lazily (`React.lazy`), so its ~110 kB gzipped chunk is only fetched on this page. Its
+  keyboard layer is on: the chart is focusable and the arrow keys move the tooltip; a one-sentence summary
+  ("Average 196 ms … 14 checks failed.") is shown above the chart and is also the SVG's `<desc>`.
+- **Colours on the chart** are the design tokens: the line (brand-600, 6.3:1 on white) and failure markers
+  (down-700, 6.5:1) exceed the 3:1 WCAG asks of graphics, axis text is ink-muted (7.6:1), and failures are
+  triangles, not only red. Failure markers are dots of a second, stroke-less line over the same data: a `Scatter`
+  with its own data made the shared tooltip show the wrong bucket.
+- **Causes in plain words** (`monitors/history.ts`): the checker's operator-facing reasons ("HTTP 503", "timed out
+  after 10s", "TLS error: …") become sentences ("The website said it was temporarily unavailable."); no status
+  codes or internal addresses are shown. Outage durations are rounded to the minute like the emails, and an ongoing
+  outage keeps counting between refreshes ("Down for 5 minutes so far").
+- **Paging:** outages (10 per page) and checks (20) have Newer/Older buttons that are `aria-disabled` at the ends
+  rather than `disabled`, so focus stays on the button just pressed. Only the first page refreshes by itself;
+  older pages would shift under the reader.
+- **Alert emails:** the owner's address plus extra recipients, with their state in words (Waiting for
+  confirmation / Receiving alerts / Unsubscribed). Add (hidden at 5 active), remove, and resend for waiting people.
+  If the owner unsubscribed through an email link, "Send me alerts again" sets `notifyOwner` back. After removing
+  someone, focus moves to the confirmation message, since the focused button has gone.
+- **The website link** opens in a new tab with `rel="noopener noreferrer"` and says so to screen readers; only
+  `http(s)` addresses become links.
+- **Titled cards are named regions** (`aria-labelledby` on the `<section>`), so screen-reader users can jump
+  between "Uptime", "Response time", "Outages", "Recent checks" and "Alert emails".

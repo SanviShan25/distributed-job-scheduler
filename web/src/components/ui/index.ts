@@ -8,3 +8,4 @@ export { PasswordInput, type PasswordInputProps } from "./PasswordInput";
 export { Spinner, type SpinnerProps } from "./Spinner";
 export { StatusBadge, type MonitorStatus, type StatusBadgeProps } from "./StatusBadge";
 export { ButtonLink, TextLink, textLinkClasses } from "./TextLink";
+export { Pager, type PagerProps } from "./Pager";

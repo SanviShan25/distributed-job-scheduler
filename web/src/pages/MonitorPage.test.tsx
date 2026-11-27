@@ -13,15 +13,17 @@ describe("MonitorPage (the 'View monitor' link in alert emails)", () => {
     fakeBackend({
       "GET /api/auth/me": loggedIn(),
       [`GET /api/monitors/${ID}`]: () =>
-        json(200, {
-          id: ID,
-          name: "Shop",
-          url: "https://shop.example.com/",
-          intervalSeconds: 300,
-          enabled: true,
-          status: "DOWN",
-          lastCheckedAt: "2026-11-25T08:00:00Z",
-        }),
+        json(
+          200,
+          aMonitor({
+            id: ID,
+            name: "Shop",
+            url: "https://shop.example.com/",
+            intervalSeconds: 300,
+            status: "DOWN",
+            lastCheckedAt: "2026-11-25T08:00:00Z",
+          }),
+        ),
     });
     renderApp(`/monitors/${ID}`);
 

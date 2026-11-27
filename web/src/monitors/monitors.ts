@@ -131,11 +131,13 @@ export function useCreateMonitor() {
   });
 }
 
+/** What PATCH /api/monitors/{id} accepts; fields left out are unchanged. */
+export type MonitorChanges = Partial<MonitorInput> & { notifyOwner?: boolean };
+
 export function useUpdateMonitor(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (changes: Partial<MonitorInput>) =>
-      api.patch<Monitor>(`/api/monitors/${id}`, changes),
+    mutationFn: (changes: MonitorChanges) => api.patch<Monitor>(`/api/monitors/${id}`, changes),
     onSuccess: (monitor) => {
       storeMonitor(queryClient, monitor);
     },
@@ -173,6 +175,16 @@ export function useDeleteMonitor(id: string) {
       void queryClient.invalidateQueries({ queryKey: listKey });
     },
   });
+}
+
+/** Changes the cached copy of one monitor (e.g. its recipients after adding one), if it is cached. */
+export function updateCachedMonitor(
+  queryClient: QueryClient,
+  id: string,
+  change: (monitor: Monitor) => Monitor,
+): void {
+  queryClient.setQueryData<Monitor>(monitorKey(id), (old) => (old ? change(old) : old));
+  void queryClient.invalidateQueries({ queryKey: listKey });
 }
 
 /**

@@ -29,6 +29,17 @@ if (!("showModal" in HTMLDialogElement.prototype)) {
   });
 }
 
+// jsdom has no ResizeObserver, which the chart's ResponsiveContainer uses to measure itself. Without
+// layout there is nothing to measure, so this one never reports a size.
+if (!("ResizeObserver" in globalThis)) {
+  const noop = () => undefined;
+  globalThis.ResizeObserver = class {
+    observe = noop;
+    unobserve = noop;
+    disconnect = noop;
+  };
+}
+
 afterEach(() => {
   cleanup();
   sessionEnd.set(null);

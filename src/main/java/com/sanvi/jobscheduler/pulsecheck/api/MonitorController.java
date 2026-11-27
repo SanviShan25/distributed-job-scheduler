@@ -212,6 +212,29 @@ public class MonitorController {
         return PageResponse.of(monitors.checks(currentUser.id(), id, from, to, pageable).map(CheckView::of));
     }
 
+    public record ResponseTimeBucketView(Instant start, long checks, long failures, Integer avgResponseMs,
+        Integer maxResponseMs) {
+        static ResponseTimeBucketView of(CheckResultRepository.ResponseTimeBucket b) {
+            return new ResponseTimeBucketView(Instant.ofEpochSecond(b.getStartEpochSecond()), b.getChecks(),
+                b.getFailures(), b.getAvgResponseMs(), b.getMaxResponseMs());
+        }
+    }
+
+    public record ResponseTimesView(String range, long bucketSeconds, List<ResponseTimeBucketView> buckets) {}
+
+    /**
+     * Response times for a chart, bucketed in SQL: {@code range=24h} (default) gives 5-minute buckets,
+     * {@code range=7d} 1-hour buckets. Every bucket is listed oldest first; empty ones have 0 checks and a null
+     * average. Averages are of successful checks only.
+     */
+    @GetMapping("/{id}/response-times")
+    public ResponseTimesView responseTimes(@PathVariable UUID id,
+            @RequestParam(defaultValue = "24h") String range) {
+        MonitorService.ResponseTimeRange r = MonitorService.ResponseTimeRange.of(range);
+        var buckets = monitors.responseTimes(currentUser.id(), id, r).stream().map(ResponseTimeBucketView::of).toList();
+        return new ResponseTimesView(r.key, r.bucket.toSeconds(), buckets);
+    }
+
     /** Incidents, newest first. */
     @GetMapping("/{id}/incidents")
     public PageResponse<IncidentView> incidents(@PathVariable UUID id,

@@ -394,6 +394,58 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
         mvc.perform(get("/api/monitors/{id}/checks", id).param("size", "101")).andExpect(status().isBadRequest());
     }
 
+    @Test
+    void responseTimesAreBucketedInSqlWithEveryBucketListed() throws Exception {
+        UUID id = create("Chart", "https://chart.test", 60);
+        jdbc.update("delete from check_results");
+        // Two checks in one 5-minute bucket, aligned to the bucket grid so they cannot straddle a boundary.
+        String bucketed = "insert into check_results (monitor_id, checked_at, up, response_ms) values "
+            + "(?, date_bin(interval '5 minutes', now() - interval '1 hour', timestamptz '2000-01-01') "
+            + "+ (? || ' seconds')::interval, ?, ?)";
+        jdbc.update(bucketed, id, "10", true, 100);
+        jdbc.update(bucketed, id, "70", true, 300);
+        jdbc.update(bucketed, id, "130", false, 9000); // a failure: counted, but not in the average
+        // 3 days ago: outside 24 h, inside 7 d
+        jdbc.update("insert into check_results (monitor_id, checked_at, up, response_ms) "
+            + "values (?, now() - interval '3 days', true, 500)", id);
+
+        String day = mvc.perform(get("/api/monitors/{id}/response-times", id))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.range").value("24h"))
+            .andExpect(jsonPath("$.bucketSeconds").value(300))
+            .andReturn().getResponse().getContentAsString();
+        var buckets = json.readTree(day).get("buckets");
+        // 24 h of 5-minute buckets, plus the partial bucket at each end
+        assertThat(buckets.size()).isBetween(288, 289);
+        var filled = new java.util.ArrayList<tools.jackson.databind.JsonNode>();
+        buckets.forEach(b -> {
+            if (b.get("checks").asLong() > 0) {
+                filled.add(b);
+            }
+        });
+        assertThat(filled).hasSize(1);
+        assertThat(filled.getFirst().get("checks").asLong()).isEqualTo(3);
+        assertThat(filled.getFirst().get("failures").asLong()).isEqualTo(1);
+        assertThat(filled.getFirst().get("avgResponseMs").asInt()).isEqualTo(200);
+        assertThat(filled.getFirst().get("maxResponseMs").asInt()).isEqualTo(300);
+        assertThat(buckets.get(0).get("avgResponseMs").isNull()).isTrue();
+        assertThat(Instant.parse(buckets.get(1).get("start").asString()).getEpochSecond() % 300).isZero();
+
+        String week = mvc.perform(get("/api/monitors/{id}/response-times", id).param("range", "7d"))
+            .andExpect(jsonPath("$.bucketSeconds").value(3600))
+            .andReturn().getResponse().getContentAsString();
+        var weekBuckets = json.readTree(week).get("buckets");
+        assertThat(weekBuckets.size()).isBetween(168, 169);
+        long weekChecks = 0;
+        for (var b : weekBuckets) {
+            weekChecks += b.get("checks").asLong();
+        }
+        assertThat(weekChecks).isEqualTo(4);
+
+        mvc.perform(get("/api/monitors/{id}/response-times", id).param("range", "1y"))
+            .andExpect(status().isBadRequest());
+    }
+
     // ------------------------------------------------------------------ ownership, listing, retention
 
     @Test
@@ -411,6 +463,7 @@ class MonitorApiIntegrationTest extends AbstractIntegrationTest {
         mvc.perform(get("/api/monitors/{id}", theirs)).andExpect(status().isNotFound());
         mvc.perform(delete("/api/monitors/{id}", theirs)).andExpect(status().isNotFound());
         mvc.perform(get("/api/monitors/{id}/checks", theirs)).andExpect(status().isNotFound());
+        mvc.perform(get("/api/monitors/{id}/response-times", theirs)).andExpect(status().isNotFound());
     }
 
     @Test

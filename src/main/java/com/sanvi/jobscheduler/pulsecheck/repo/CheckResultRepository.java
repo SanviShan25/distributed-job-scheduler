@@ -64,6 +64,56 @@ public interface CheckResultRepository extends JpaRepository<CheckResult, Long> 
         """, nativeQuery = true)
     List<DailyStats> last24h(@Param("monitorIds") Collection<UUID> monitorIds);
 
+    /**
+     * Response times over the last {@code rangeSeconds}, in buckets of {@code bucketSeconds} (database clock).
+     * Every bucket in the window is returned, oldest first, including empty ones (0 checks, null average), so
+     * gaps in the data stay gaps on a chart. Buckets are aligned with {@code date_bin} to a fixed origin, so a
+     * bucket covers the same minutes on every refresh; the first one may start a little before the window.
+     * The average is of successful checks only, like {@link #uptime}. One range scan on the
+     * (monitor_id, checked_at) index.
+     */
+    @Query(value = """
+        with bounds as (
+          select (:bucketSeconds * interval '1 second') as step,
+                 date_bin(:bucketSeconds * interval '1 second', now() - :rangeSeconds * interval '1 second',
+                          timestamptz '2000-01-01 00:00:00+00') as first_bucket
+        ),
+        buckets as (
+          select generate_series(b.first_bucket, now(), b.step) as bucket_start from bounds b
+        ),
+        stats as (
+          select date_bin(b.step, r.checked_at, timestamptz '2000-01-01 00:00:00+00') as bucket_start,
+                 count(*) as checks,
+                 count(*) filter (where not r.up) as failures,
+                 round(avg(r.response_ms) filter (where r.up))::int as avg_ms,
+                 max(r.response_ms) filter (where r.up) as max_ms
+          from check_results r cross join bounds b
+          where r.monitor_id = :monitorId and r.checked_at >= b.first_bucket
+          group by 1
+        )
+        select extract(epoch from k.bucket_start)::bigint as "startEpochSecond",
+               coalesce(s.checks, 0) as "checks",
+               coalesce(s.failures, 0) as "failures",
+               s.avg_ms as "avgResponseMs",
+               s.max_ms as "maxResponseMs"
+        from buckets k left join stats s on s.bucket_start = k.bucket_start
+        order by k.bucket_start
+        """, nativeQuery = true)
+    List<ResponseTimeBucket> responseTimes(@Param("monitorId") UUID monitorId,
+        @Param("rangeSeconds") long rangeSeconds, @Param("bucketSeconds") long bucketSeconds);
+
+    interface ResponseTimeBucket {
+        Long getStartEpochSecond();
+
+        Long getChecks();
+
+        Long getFailures();
+
+        Integer getAvgResponseMs();
+
+        Integer getMaxResponseMs();
+    }
+
     interface DailyStats {
         UUID getMonitorId();
 

@@ -1,4 +1,4 @@
-import { Pause, Pencil, Play, Trash2 } from "lucide-react";
+import { ExternalLink, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -15,6 +15,13 @@ import {
 } from "../components/ui";
 import { formatDateTime, formatRelative, useNow } from "../lib/time";
 import { usePageTitle } from "../lib/usePageTitle";
+import { AlertRecipients } from "../monitors/AlertRecipients";
+import {
+  IncidentHistory,
+  RecentChecks,
+  ResponseTimeCard,
+  UptimeSummary,
+} from "../monitors/MonitorHistory";
 import { MonitorForm } from "../monitors/MonitorForm";
 import {
   displayStatus,
@@ -155,7 +162,9 @@ function MonitorDetails({ monitor }: { monitor: Monitor }) {
       <Card>
         <dl className="grid gap-4 sm:grid-cols-[max-content_1fr] sm:gap-x-8">
           <dt className="text-sm text-ink-muted">Address</dt>
-          <dd className="font-semibold break-all">{monitor.url}</dd>
+          <dd className="font-semibold break-all">
+            <WebsiteLink url={monitor.url} />
+          </dd>
           <dt className="text-sm text-ink-muted">Checked</dt>
           <dd>{monitor.enabled ? formatInterval(monitor.intervalSeconds) : "Paused"}</dd>
           <dt className="text-sm text-ink-muted">Last check</dt>
@@ -170,6 +179,12 @@ function MonitorDetails({ monitor }: { monitor: Monitor }) {
           </dd>
         </dl>
       </Card>
+
+      <UptimeSummary monitor={monitor} />
+      <ResponseTimeCard monitorId={monitor.id} />
+      <IncidentHistory monitorId={monitor.id} />
+      <RecentChecks monitorId={monitor.id} />
+      <AlertRecipients monitor={monitor} />
 
       <EditMonitorDialog
         monitor={monitor}
@@ -190,6 +205,27 @@ function MonitorDetails({ monitor }: { monitor: Monitor }) {
         }}
       />
     </>
+  );
+}
+
+/**
+ * The monitored address, opening in a new tab. rel="noopener noreferrer": the site gets no handle on
+ * this page (window.opener) and no Referer naming the monitor page. Only http(s) addresses become
+ * links (the backend accepts nothing else, but a javascript: URL must never be clickable).
+ */
+function WebsiteLink({ url }: { url: string }) {
+  if (!/^https?:\/\//i.test(url)) return <span>{url}</span>;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-baseline gap-1.5 rounded-sm text-brand-700 underline underline-offset-4 hover:text-brand-800"
+    >
+      <span>{url}</span>
+      <ExternalLink aria-hidden="true" className="size-4 shrink-0 self-center" />
+      <span className="sr-only">(opens in a new tab)</span>
+    </a>
   );
 }
 
