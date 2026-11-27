@@ -2,7 +2,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { sessionEnd } from "../auth/session";
-import { fakeBackend, json, problem } from "../test/fakeBackend";
+import { fakeBackend, json, noContent, problem } from "../test/fakeBackend";
 import { alice, loggedOut, renderApp } from "../test/renderApp";
 
 async function fillAndSubmit(email: string, password: string) {
@@ -36,7 +36,7 @@ describe("LoginPage", () => {
   it("logs in with 'keep me logged in', gets a new CSRF token, and opens the dashboard", async () => {
     let loggedIn = false;
     const backend = fakeBackend({
-      "GET /api/auth/me": () => (loggedIn ? json(200, alice) : problem(401, "Please log in")),
+      "GET /api/auth/me": () => (loggedIn ? json(200, alice) : noContent()),
       "POST /api/auth/login": () => {
         loggedIn = true;
         return json(200, alice);

@@ -299,6 +299,8 @@ describe("Monitor detail page: alert emails", () => {
     await userEvent.type(input, "bob@example.com");
     await userEvent.click(within(card).getByRole("button", { name: "Add recipient" }));
     expect(await within(card).findByText("This person is already on the list.")).toBeVisible();
+    expect(input).toHaveFocus();
+    expect(input).toHaveAccessibleDescription(/This person is already on the list\./);
     expect(card).not.toHaveTextContent("PENDING");
   });
 

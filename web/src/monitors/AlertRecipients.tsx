@@ -131,10 +131,11 @@ export function AlertRecipients({ monitor }: { monitor: Monitor }) {
             adding={add.isPending}
             error={add.error ? recipientError(add.error) : undefined}
             remaining={MAX_EXTRA_RECIPIENTS - active}
-            onAdd={(email, done) => {
+            onAdd={(email, { done, failed }) => {
               setNotice(null);
               setActionError(null);
               add.mutate(email, {
+                onError: failed,
                 onSuccess: (added) => {
                   done();
                   report(
@@ -221,7 +222,8 @@ function AddRecipientForm({
   adding: boolean;
   error: string | undefined;
   remaining: number;
-  onAdd: (email: string, done: () => void) => void;
+  /** `failed` is called when the server refuses; the error is then shown on the field. */
+  onAdd: (email: string, callbacks: { done: () => void; failed: () => void }) => void;
   onEdit: () => void;
 }) {
   const [email, setEmail] = useState("");
@@ -239,8 +241,14 @@ function AddRecipientForm({
       inputRef.current?.focus();
       return;
     }
-    onAdd(normalizeEmail(email), () => {
-      setEmail("");
+    onAdd(normalizeEmail(email), {
+      done: () => {
+        setEmail("");
+      },
+      // Focus the field so screen readers read its error (linked by aria-describedby) right away.
+      failed: () => {
+        inputRef.current?.focus();
+      },
     });
   }
 

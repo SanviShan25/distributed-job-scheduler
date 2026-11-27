@@ -13,14 +13,12 @@ export interface User {
 
 export const meQueryKey = ["auth", "me"] as const;
 
-/** The logged-in user, or null when nobody is logged in. */
+/**
+ * The logged-in user, or null when nobody is logged in: the backend answers 204 No Content then (not
+ * 401), so a logged-out visit leaves no error in the browser console.
+ */
 export async function fetchCurrentUser(): Promise<User | null> {
-  try {
-    return await api.get<User>("/api/auth/me", { on401: "error" });
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 401) return null;
-    throw error;
-  }
+  return (await api.get<User | undefined>("/api/auth/me")) ?? null;
 }
 
 export function useCurrentUser() {

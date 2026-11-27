@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { Monitor } from "../monitors/monitors";
@@ -195,5 +195,27 @@ describe("MonitorPage actions", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toHaveFocus();
     expect(backend.requests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+});
+
+describe("MonitorPage status announcements", () => {
+  it("tells screen-reader users when the website goes down while the page is open", async () => {
+    let current = aMonitor({ name: "Shop", status: "UP" });
+    fakeBackend({
+      "GET /api/auth/me": loggedIn(),
+      [`GET /api/monitors/${current.id}`]: () => json(200, current),
+    });
+    const app = renderApp(`/monitors/${current.id}`);
+    await screen.findByRole("heading", { level: 1, name: "Shop" });
+    const announcer = screen
+      .getAllByRole("status")
+      .find((element) => element.classList.contains("sr-only"));
+    expect(announcer).toBeEmptyDOMElement();
+
+    current = { ...current, status: "DOWN" };
+    await app.queryClient.refetchQueries({ queryKey: ["monitors", current.id], exact: true });
+    await waitFor(() => {
+      expect(announcer).toHaveTextContent("Shop is down.");
+    });
   });
 });

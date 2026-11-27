@@ -472,8 +472,8 @@ runs while a transaction is active.
   will after login), as DESIGN's CSRF section asks. If the cookie is missing anyway, the client fetches
   one first; a 403 with `"code": "csrf_invalid"` (e.g. the cookie was cleared mid-session) gets one
   fresh token and one retry. Other 403s ("Your password is incorrect") are never retried.
-- **Not every 401 means "session expired".** Login answers a wrong password with 401, and `GET
-  /api/auth/me` answers "not logged in" with 401. Callers say so with `on401: "error"`; every other 401
+- **Not every 401 means "session expired".** Login answers a wrong password with 401. Callers say so
+  with `on401: "error"`; every other 401
   ends the session in the app: the cached user is set to `null` and every other cached query is removed
   (no private data stays in memory), and the route guard sends the user to `/login?next=<page>` with
   "Your session has ended. Please log in again." A logout that gets 401 counts as a successful logout.
@@ -678,3 +678,28 @@ runs while a transaction is active.
   `http(s)` addresses become links.
 - **Titled cards are named regions** (`aria-labelledby` on the `<section>`), so screen-reader users can jump
   between "Uptime", "Response time", "Outages", "Recent checks" and "Alert emails".
+- **Screen readers and the chart:** Recharts' tooltip is not a live region, so while the chart has keyboard
+  focus the period under the arrow keys ("20:10–20:15: average 200 ms, slowest 280 ms, 2 failed checks.") is
+  also written to a polite live region outside the SVG (via `useActiveTooltipDataPoints`); mouse hovering stays
+  silent. The SVG's description ends with "Use the left and right arrow keys to hear each time period."
+- **Status changes while the page is open** (it refreshes by itself) are announced politely: "Shop is down.",
+  "Shop is back up.", "Checks paused.". First checks after adding, resuming or a new address are already
+  announced by the "Checking your website…" message, so they are not repeated.
+- **Checked with axe-core** (WCAG 2.2 AA and best-practice rules) in the built app in headless Chrome: login,
+  sign-up, dashboard, add website, account settings and the detail page (24 h and 7 d) have no violations, no CSP
+  violations and no console messages. Graphics contrast, which axe does not check, was computed: line 6.3:1,
+  failure markers 6.5:1, axis line 4.8:1. Markers and line are nearly the same luminance, so they differ by
+  shape and position (white-outlined triangles on the baseline), never colour alone.
+
+### Web app: polish
+
+- **`GET /api/auth/me` answers 204 No Content when nobody is logged in** (no session, an ended session, or an
+  account deleted while its session was alive), instead of 401. "Nobody" is a normal answer to "who is logged
+  in?", and browsers log every 401 as a red console error, so each logged-out visit looked broken. The endpoint
+  is public in the session chain (`permitAll`); every other `/api/**` endpoint still answers 401 without a
+  session, and the client still treats those as an ended session.
+- **Autofill:** sign-in and sign-up use `email` + `current-password`/`new-password`. Email fields turn off
+  automatic capitals, autocorrect and spellcheck on phones (set by `Input` for `type="email"`). The
+  change-password form carries a hidden `autocomplete="username"` field with the account's address, so a
+  password manager knows which saved login to update. A test checks every account form's attributes.
+

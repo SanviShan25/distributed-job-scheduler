@@ -6,8 +6,11 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  useActiveTooltipDataPoints,
+  useIsTooltipActive,
   type TooltipContentProps,
 } from "recharts";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChartRange, ResponseTimeBucket } from "./history";
 import { formatResponseTime } from "./monitors";
 
@@ -67,18 +70,30 @@ export default function ResponseTimeChart({
       marker: b.failures > 0 ? 0 : null,
     };
   });
+  // Screen readers: Recharts' tooltip is not a live region, so while the chart has keyboard focus the
+  // point under the arrow keys is also read out from a polite live region outside the SVG.
+  const wrapper = useRef<HTMLDivElement>(null);
+  const [spoken, setSpoken] = useState("");
+  const onActivePoint = useCallback(
+    (point: Point | undefined) => {
+      if (!point || !wrapper.current?.contains(document.activeElement)) return;
+      setSpoken(describePoint(point, range));
+    },
+    [range],
+  );
   const first = points[0]?.t ?? 0;
   const last = points[points.length - 1]?.t ?? 0;
 
   return (
-    <div className="h-64 w-full sm:h-72">
+    <div ref={wrapper} className="h-64 w-full sm:h-72">
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
           data={points}
           margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
           title={`Response time, ${range === "24h" ? "last 24 hours" : "last 7 days"}`}
-          desc={description}
+          desc={`${description} Use the left and right arrow keys to hear each time period.`}
         >
+          <ActivePointReporter onChange={onActivePoint} />
           <CartesianGrid stroke={COLORS.grid} vertical={false} />
           <XAxis
             dataKey="t"
@@ -131,8 +146,35 @@ export default function ResponseTimeChart({
           />
         </ComposedChart>
       </ResponsiveContainer>
+      <p className="sr-only" aria-live="polite">
+        {spoken}
+      </p>
     </div>
   );
+}
+
+function ActivePointReporter({ onChange }: { onChange: (point: Point | undefined) => void }) {
+  const active = useIsTooltipActive();
+  const point = useActiveTooltipDataPoints<Point>()?.[0];
+  const current = active ? point : undefined;
+  useEffect(() => {
+    onChange(current);
+  }, [current, onChange]);
+  return null;
+}
+
+/** "10:05–10:10: average 245 ms, slowest 410 ms, 2 failed checks." */
+function describePoint(point: Point, range: ChartRange): string {
+  const parts: string[] = [];
+  if (point.checks === 0) parts.push("no checks");
+  if (point.avg !== null) parts.push(`average ${formatResponseTime(point.avg)}`);
+  if (point.max !== null && point.max !== point.avg) {
+    parts.push(`slowest ${formatResponseTime(point.max)}`);
+  }
+  if (point.failures > 0) {
+    parts.push(point.failures === 1 ? "1 failed check" : `${String(point.failures)} failed checks`);
+  }
+  return `${formatWindow(point, range)}: ${parts.join(", ")}.`;
 }
 
 function FailureMarker({ cx, cy, index }: { cx?: number; cy?: number; index?: number }) {

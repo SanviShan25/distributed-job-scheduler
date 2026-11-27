@@ -155,6 +155,7 @@ function MonitorDetails({ monitor }: { monitor: Monitor }) {
         </div>
       </header>
 
+      <StatusAnnouncer monitor={monitor} />
       {setPaused.error && <Alert variant="error">{setPaused.error.message}</Alert>}
       {saved && <Alert variant="success">Your changes have been saved.</Alert>}
       <CheckProgress monitor={monitor} />
@@ -205,6 +206,28 @@ function MonitorDetails({ monitor }: { monitor: Monitor }) {
         }}
       />
     </>
+  );
+}
+
+/**
+ * Tells screen-reader users when the status changes while they are on the page (the page refreshes by
+ * itself, so otherwise only the badge would change). Only real Up/Down transitions and pausing: a first
+ * check after adding, resuming or a new address is already announced by CheckProgress.
+ */
+function StatusAnnouncer({ monitor }: { monitor: Monitor }) {
+  const status = displayStatus(monitor);
+  const [previous, setPrevious] = useState(status);
+  const [message, setMessage] = useState("");
+  if (status !== previous) {
+    setPrevious(status);
+    if (status === "PAUSED") setMessage("Checks paused.");
+    else if (status === "DOWN" && previous === "UP") setMessage(`${monitor.name} is down.`);
+    else if (status === "UP" && previous === "DOWN") setMessage(`${monitor.name} is back up.`);
+  }
+  return (
+    <p role="status" className="sr-only">
+      {message}
+    </p>
   );
 }
 

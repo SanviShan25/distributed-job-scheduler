@@ -73,8 +73,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /**
    * What a 401 means. "session-expired" (default): the session ended, so the user is sent to log in.
-   * "error": a normal answer the caller handles, e.g. wrong password at login, or "not logged in" from
-   * GET /api/auth/me.
+   * "error": a normal answer the caller handles, e.g. wrong password at login. (GET /api/auth/me answers
+   * "nobody is logged in" with 204, not 401.)
    */
   on401?: "session-expired" | "error";
 }

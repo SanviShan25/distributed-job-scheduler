@@ -252,7 +252,7 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | `POST /api/auth/login` | anyone | `{email, password, rememberMe?}`; starts a session |
 | `POST /api/auth/forgot-password` | anyone | `{email}`; always the same answer |
 | `POST /api/auth/reset-password` | anyone | `{token, newPassword}`; logs out every session |
-| `GET /api/auth/me` | logged in | The current user, with `monitorLimit` (how many monitors the account may have) |
+| `GET /api/auth/me` | anyone | The current user, with `monitorLimit` (how many monitors the account may have); `204 No Content` when nobody is logged in |
 | `POST /api/auth/logout` | logged in | Ends the session |
 | `POST /api/auth/resend-verification` | logged in | New verification link (3/hour) |
 | `POST /api/auth/change-password` | logged in | `{currentPassword, newPassword}`; logs out other sessions |

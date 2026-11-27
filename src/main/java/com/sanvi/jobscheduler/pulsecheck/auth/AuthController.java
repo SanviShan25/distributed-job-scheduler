@@ -133,8 +133,16 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * The logged-in user, or 204 No Content when nobody is logged in (no session, an ended session, or an
+     * account deleted while its session was alive). Not being logged in is a normal answer to this question,
+     * so it is not a 401, which browsers log as an error on every visit by a logged-out user.
+     */
     @GetMapping("/me")
-    public MeResponse me(@AuthenticationPrincipal SessionUser principal, HttpServletRequest request) {
+    public ResponseEntity<MeResponse> me(@AuthenticationPrincipal SessionUser principal, HttpServletRequest request) {
+        if (principal == null) {
+            return ResponseEntity.noContent().build();
+        }
         AppUser user = users.findById(principal.id()).orElse(null);
         if (user == null) {
             // The account was deleted while this session was alive.
@@ -142,9 +150,10 @@ public class AuthController {
             if (session != null) {
                 session.invalidate();
             }
-            throw AccountService.invalidCredentials();
+            SecurityContextHolder.clearContext();
+            return ResponseEntity.noContent().build();
         }
-        return MeResponse.of(user, props.maxMonitorsPerUser());
+        return ResponseEntity.ok(MeResponse.of(user, props.maxMonitorsPerUser()));
     }
 
     /** Confirms the email address with the token from the verification link. Works without being logged in. */

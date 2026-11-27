@@ -25,6 +25,11 @@ export function Input({
   className,
   ...rest
 }: InputProps) {
+  // Email addresses: no automatic capital letter, autocorrect or spellcheck on phones. Callers can override.
+  const emailDefaults =
+    rest.type === "email"
+      ? ({ autoCapitalize: "none", autoCorrect: "off", spellCheck: false } as const)
+      : undefined;
   const generatedId = useId();
   const inputId = id ?? generatedId;
   const hintId = `${inputId}-hint`;
@@ -44,6 +49,7 @@ export function Input({
       )}
       <div className="relative">
         <input
+          {...emailDefaults}
           id={inputId}
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy || undefined}

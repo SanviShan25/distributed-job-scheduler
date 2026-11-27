@@ -199,8 +199,8 @@ class AccountEmailFlowsIntegrationTest extends AbstractIntegrationTest {
         stranger.postJson("/api/auth/reset-password", "{\"token\":\"" + token + "\",\"newPassword\":\"brand new password\"}")
             .andExpect(status().isOk());
 
-        laptop.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
-        phone.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        laptop.perform(get("/api/auth/me")).andExpect(status().isNoContent());
+        phone.perform(get("/api/auth/me")).andExpect(status().isNoContent());
         browser().login(EMAIL, PASSWORD).andExpect(status().isUnauthorized());
         loggedIn("brand new password");
 
@@ -282,7 +282,7 @@ class AccountEmailFlowsIntegrationTest extends AbstractIntegrationTest {
 
         current.perform(get("/api/auth/me")).andExpect(status().isOk());
         assertThat(current.sessionCookie()).as("session id rotated").isNotEqualTo(before);
-        other.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        other.perform(get("/api/auth/me")).andExpect(status().isNoContent());
         browser().login(EMAIL, PASSWORD).andExpect(status().isUnauthorized());
         loggedIn("brand new password");
     }
@@ -310,8 +310,8 @@ class AccountEmailFlowsIntegrationTest extends AbstractIntegrationTest {
         assertThat(jdbc.queryForObject("select count(*) from monitors", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from job_schedules", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from auth_tokens", Integer.class)).isZero();
-        session.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
-        otherDevice.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        session.perform(get("/api/auth/me")).andExpect(status().isNoContent());
+        otherDevice.perform(get("/api/auth/me")).andExpect(status().isNoContent());
         browser().login(EMAIL, PASSWORD).andExpect(status().isUnauthorized());
     }
 }
