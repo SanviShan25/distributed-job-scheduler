@@ -6,6 +6,7 @@ import { validateCurrentPassword, validateEmail } from "../auth/validation";
 import { Alert, Button, Card, Checkbox, Input, PasswordInput, TextLink } from "../components/ui";
 import { focusFirstError, hasErrors, type FieldErrors } from "../lib/forms";
 import { usePageTitle } from "../lib/usePageTitle";
+import { DemoOffer } from "../demo/DemoOffer";
 
 interface LoginLocationState {
   sessionExpired?: boolean;
@@ -95,6 +96,8 @@ export function LoginPage() {
             New to PulseCheck? <TextLink to="/signup">Create an account</TextLink>
           </p>
         </div>
+
+        <DemoOffer />
       </div>
     </Card>
   );

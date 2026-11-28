@@ -9,6 +9,20 @@ export interface User {
   createdAt: string;
   /** How many websites this account may monitor. */
   monitorLimit: number;
+  /** The shortest check interval this account may use, in seconds (longer for demo accounts). */
+  minIntervalSeconds: number;
+  /** A private, temporary demo account: no password, no emails, some settings unavailable. */
+  demo: boolean;
+  /** When a demo account is deleted (ISO time); null for normal accounts. */
+  demoExpiresAt: string | null;
+  /** Same as GET /api/config. */
+  demoEnabled: boolean;
+  signupOpen: boolean;
+}
+
+/** How the app shows the account: demo addresses are generated and mean nothing to the visitor. */
+export function accountLabel(user: User): string {
+  return user.demo ? "Demo account" : user.email;
 }
 
 export const meQueryKey = ["auth", "me"] as const;
@@ -42,7 +56,9 @@ export function useLogout() {
       await refreshCsrfToken().catch(() => undefined);
     },
     onSuccess: () => {
-      sessionEnd.set("logged-out");
+      // Logging out of a demo deletes it on the server.
+      const wasDemo = queryClient.getQueryData<User | null>(meQueryKey)?.demo === true;
+      sessionEnd.set(wasDemo ? "demo-ended" : "logged-out");
       clearPrivateData(queryClient);
     },
   });

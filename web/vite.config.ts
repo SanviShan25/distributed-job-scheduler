@@ -25,6 +25,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Unit tests only; e2e/ holds the Playwright tests, which need the real stack.
+    include: ["src/**/*.test.{ts,tsx}"],
     environmentOptions: { jsdom: { url: "http://localhost:5173/" } },
     setupFiles: ["./src/test/setup.ts"],
     // Several findBy* waits (up to 5 s each, see setup.ts) can happen in one test.

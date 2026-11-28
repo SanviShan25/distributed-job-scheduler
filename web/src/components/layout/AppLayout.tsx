@@ -1,5 +1,6 @@
 import { Link, Outlet } from "react-router";
-import { useCurrentUser } from "../../auth/user";
+import { accountLabel, useCurrentUser } from "../../auth/user";
+import { DemoBanner } from "../../demo/DemoBanner";
 import { Logo } from "../Logo";
 import { UserMenu } from "./UserMenu";
 import { VerifyEmailBanner } from "./VerifyEmailBanner";
@@ -22,10 +23,15 @@ export function AppLayout() {
           <Link to="/dashboard" className="rounded-lg">
             <Logo />
           </Link>
-          <UserMenu email={user.email} />
+          <UserMenu email={accountLabel(user)} demo={user.demo} />
         </div>
       </header>
       <main id="main" tabIndex={-1} className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 sm:py-8">
+        {user.demo && (
+          <div className="mb-6">
+            <DemoBanner user={user} />
+          </div>
+        )}
         {!user.emailVerified && (
           <div className="mb-6">
             <VerifyEmailBanner email={user.email} />

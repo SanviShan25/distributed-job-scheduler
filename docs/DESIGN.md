@@ -703,3 +703,152 @@ runs while a transaction is active.
   change-password form carries a hidden `autocomplete="username"` field with the account's address, so a
   password manager knows which saved login to update. A test checks every account form's attributes.
 
+### Demo mode: a private sandbox per visitor, and limited sign-ups (V12, V13)
+
+For a public demo on a free tier with no custom domain, Resend can only deliver to the owner's own address, so
+visitors can't receive verification emails. Demo mode lets them try the app anyway.
+
+- **Why a sandbox per visitor rather than one shared demo account.** A first version had one shared account that
+  was reset nightly. Each visitor getting their own account is better because:
+  - *Privacy and trust:* with a shared account, every visitor sees (and can edit, pause or delete) the URLs other
+    visitors typed. Some will paste internal or personal sites. "Private by default" is one of the app's selling
+    points, and a shared account contradicts it on the first page a visitor sees.
+  - *A predictable experience:* one visitor deleting the sample monitors, or filling the monitor limit, breaks the
+    demo for everyone until the nightly reset. A sandbox always starts in the same state.
+  - *Abuse is bounded per visitor,* not by a global reset: each sandbox expires after 3 hours, has at most 3
+    monitors checked every 5 minutes or slower, and there are at most 20 at once. Worst case is
+    20 × 3 checks per 5 minutes, about 0.2 checks per second, comfortably within a free tier.
+  - *It exercises the real code paths:* a sandbox is an ordinary account row with a flag, so per-user isolation
+    (ownership in every query, 404 for others' monitors) is what keeps visitors apart. Nothing demo-specific
+    is needed for that.
+
+  The cost is a little churn (two monitors, two schedules and two checks per "Try the demo") and a capacity limit
+  that can turn visitors away. Both are bounded by the caps and the per-IP rate limit.
+- **Migrations:** V12 added `users.demo` (with an "at most one" index) for the shared account; V13 drops that
+  index, adds `demo_expires_at`, and deletes the V12 shared account, its nightly reset schedule and pending
+  `DEMO_RESET` jobs.
+- **Sandbox accounts are fenced in by the database.** `users.demo` marks them and `demo_expires_at` (required
+  for them, absent otherwise: CHECK) is when they go. A CHECK constraint keeps `password_hash` null, so nothing,
+  not even a password reset, can turn a sandbox into a normal account. Addresses are
+  `demo-{id}@pulsecheck.invalid` (`.invalid` can never be delivered or owned, RFC 2606).
+- **`POST /api/auth/demo`** checks the per-IP limit (20/hour, Redis, fails open like login), then in one
+  transaction takes a Postgres advisory lock (so parallel requests can't exceed the cap), counts *unexpired*
+  sandboxes, refuses with `503` `"code": "demo_busy"` ("The demo is busy. Please try again in a few minutes.",
+  `Retry-After: 300`) at `max-sandboxes`, and otherwise creates the account with the two sample monitors (5-minute
+  interval, each with its schedule and an immediate check). It then starts the session exactly like `/login`
+  (rotated session id, fresh CSRF token, CSRF required), with an idle timeout no longer than the sandbox's life.
+  404 when demo mode is off.
+- **One visitor, one sandbox.** Trying the demo again from a browser that is already in a sandbox deletes the old
+  one first, and logging out deletes it (nobody could log back in to it anyway). Both free capacity early.
+- **Expiry is enforced at once, deletion happens later.** `CurrentUser` and `/me` treat an expired sandbox as
+  logged out (database clock), and expired sandboxes don't count towards the cap, so the cleanup's timing never
+  matters to visitors.
+- **Cleanup on our own scheduler.** API startup creates the `job_schedules` row `pulsecheck:demo-cleanup` (every
+  5 minutes, `ON CONFLICT (name)`, updated if the cron changed); any worker runs the `DEMO_CLEANUP` job. It
+  deletes expired sandboxes in batches of 100, each batch in its own transaction with `FOR UPDATE SKIP LOCKED`
+  (overlapping runs split the work): first their monitor schedules (not owned via a foreign key), then the
+  accounts, which cascades to monitors, check results, incidents, alert events, recipients and tokens. A retried
+  run finds nothing left to do. Stale sessions of deleted sandboxes simply act logged out until Redis expires them.
+  The code is in `DemoAccount`, which has no profile, because workers have no `ScheduleService`/`MonitorService`;
+  the "check now" logic moved to a shared `CheckTrigger`.
+- **Demo mode off** (the default): API startup deletes every sandbox and the cleanup schedule, so turning demo mode
+  off leaves no password-less accounts behind (in the spirit of "Removing the dev user (V8)").
+- **Restrictions are in the services, not the controllers:** change password, delete account (logging out does
+  that), resend verification, and add/resend/remove extra alert recipients answer `403` with
+  `"code": "demo_restricted"` and a plain-English `detail`. Verification needs no rule: sandboxes are created
+  verified and never get tokens. Forgot-password for a sandbox address issues no token and sends nothing (same
+  `202` as always). Monitor limit (`max-monitors`, 3) and shortest interval (`min-interval-seconds`, 300) apply on
+  create and update; `/me` reports `monitorLimit`, `minIntervalSeconds` and `demoExpiresAt`.
+- **No email, ever.** Incidents of sandbox monitors open and resolve normally, and the transition is recorded in
+  `alert_events` with the outcome `DEMO`, but no email job is queued. As a backstop, `EmailOutbox` refuses any
+  email addressed to any sandbox, whichever code path asks.
+- **Limited sign-ups** (`pulsecheck.signup.allowed-emails`, comma-separated, empty = anyone). Other addresses get
+  `403` with `"code": "signup_closed"` and the same body whether or not they have an account (the check depends
+  only on the list), so it can't be used to discover accounts. Nothing is created and no email is sent.
+- **`GET /api/config`** (public) returns `{demoEnabled, signupOpen}` so the logged-out web app can show
+  "Try the demo" and explain limited sign-ups. It never exposes the allowlist. `/me` carries the same two switches.
+
+### Web app: demo, limited sign-ups and the landing page
+
+- **What the logged-out app knows comes from `GET /api/config`** (`demoEnabled`, `signupOpen`), cached for the
+  page's lifetime. If it can't be loaded, the app behaves as if there were no demo and sign-ups were open: the
+  sign-up page and the server still explain any limit, so nothing is promised that can't be kept.
+- **"Try the demo"** (landing, login and sign-up pages) posts to `/api/auth/demo` and then works exactly like
+  login: a fresh CSRF token, the user put in the cache, and on to the dashboard. "The demo is busy" (`503`
+  `demo_busy`) is the one server error shown word for word; other 5xx answers keep the generic message.
+- **Inside a demo account** a banner on every page says "This is your private demo. It's deleted after 3 hours"
+  with the time left (from `demoExpiresAt`, updated every 30 seconds, not a live region, so screen readers aren't
+  interrupted). The hours come from `createdAt` to `demoExpiresAt`, so the sentence stays true if the lifetime
+  is configured differently. The generated address is never shown ("Demo account"), and "Log out" says
+  "End the demo", because that deletes it.
+- **Restricted actions are not offered**, rather than offered and then refused: account settings explain that
+  there is no password and the account deletes itself; a website's "Alert emails" card says the demo sends no
+  emails; check intervals faster than `minIntervalSeconds` are shown but disabled, with the reason. The server
+  still enforces all of it.
+- **A new session-end reason, `demo-ended`**: when the time runs out, when the visitor ends the demo, or when a
+  request gets `401` while in a demo, the visitor goes to the home page with "Your demo has ended and its data
+  has been deleted" instead of the login page's "Your session has ended". **The first reason wins:** a `401`
+  only sets `expired` when no reason is set yet, because several requests in flight can all fail with `401`,
+  and the last one must not overwrite "demo ended" or "logged out".
+- **Landing page:** its own full-width layout (header, hero, how it works, features, footer), still behind
+  `PublicOnly`, so logged-in visitors go straight to the dashboard. Semantic landmarks and headings; no inline
+  scripts or styles, so it runs under the strict CSP. The dashboard screenshot is a fixed-size placeholder
+  until the end-to-end tests capture a real one, so the layout won't shift when it arrives.
+- **SEO:** `index.html` has the landing page's title, description and Open Graph tags; `usePageTitle` updates
+  the title, description and their Open Graph copies per page. **The canonical URL and `og:url` are set per
+  page in the app,** not in `index.html`: the same file is served for every route, so a build-time canonical
+  would declare `/login` a duplicate of `/`. `robots.txt` allows `/`, `/login` and `/signup` and disallows
+  `/api/`, the app, the email-link pages (their URLs carry one-time tokens) and the scheduler's endpoints.
+  `og:image` needs a raster image (PNG), which is added with the Playwright screenshots in the next step.
+
+### End-to-end tests (Playwright)
+
+- **Against the real stack, not a dev server:** the Docker image (Spring Boot serving the built app under the
+  strict CSP), Postgres, Redis and a worker, as their own Compose project (`pulsecheck-e2e`) with their own
+  settings file (`web/e2e/stack/e2e.env`, no secrets) and volumes, so they never touch a developer's `.env` or
+  data. Demo mode is on and email goes to the log, as on the public demo.
+- **Always from empty data** (`stack.sh up` deletes the old volumes first), and every demo test ends its demo
+  afterwards: leftover demos and rate-limit counters from earlier runs had filled the 20-demo cap and the 5/hour
+  sign-up limit, so reruns failed for reasons that had nothing to do with the code. The stack also raises the
+  demo-login and sign-up limits.
+- **No durability in the test stack:** Postgres runs with `fsync=off`, Redis without AOF. Docker Desktop's
+  disk sometimes stalls for tens of seconds (Redis logged "AOF fsync is taking too long"), which froze every
+  write in the API and the worker and timed tests out. The data is thrown away after each run anyway.
+- **One test at a time.** In parallel, the browsers competed for CPU with two still-warming-up JVMs (JIT alone
+  used several cores), and API calls that normally take milliseconds took seconds. The suite takes under a minute
+  serially, and a CI runner only has 4 cores.
+- **The checks are real:** the worker visits example.com, example.org and the test status page, so the tests
+  need internet access (CI runners have it). Waits are bounded; the chart is awaited by reloading, since the page
+  refreshes it only once a minute.
+- **Screenshots** (`npm run e2e:screenshots`) start a demo, add a third website, write 24 hours of sample check
+  history (with one 20-minute outage) for that demo straight into the test database, and capture the dashboard
+  and a website's page for the README, the landing page and the link preview. The demo banner is hidden in them
+  (it's about the visitor's session, not the product), which needs Playwright's `bypassCSP`; the e2e tests
+  themselves run with the CSP enforced and fail on any console error.
+
+### Web app: performance, 404 and titles
+
+- **Lighthouse** (13.6, against the Docker image with its strict CSP): every public page scores 100 for
+  accessibility, best practices and SEO, and 100 for performance on desktop. On Lighthouse's simulated slow-4G
+  phone, performance is 89–91 (home page LCP about 3.7 s). What remains is the single-page-app model itself:
+  nothing appears until about 113 kB (gzipped) of JavaScript, almost all React and React Router, has loaded.
+  Pre-rendering the public pages to HTML at build time would remove that; it is the next step if the score
+  matters. `/forgot-password` and the 404 page score 66 for SEO on purpose (blocked in `robots.txt` and
+  `noindex`), and the back/forward-cache audit fails only under memory pressure on the test machine ("not
+  actionable").
+- **The logged-in pages load on first use** (React Router `lazy` routes): visitors to the home page no longer
+  download the dashboard, the website page or the settings (−84 kB).
+- **The dashboard screenshot loads eagerly with high priority**: on phones it is the largest element in the
+  first screen, so lazy loading delayed the LCP.
+- **Public pages wait for `/api/config` as well as `/api/auth/me`**, fetched in parallel, so they appear once,
+  complete. Before, the "Try the demo" button appeared after the page and pushed it down (layout shift 0.03).
+  Rendering public pages without waiting at all was tried and gave no measurable LCP gain, so it was not kept.
+  The config query does not refetch on mount (`retryOnMount: false`): when it fails, each component reading it
+  would otherwise refetch, which puts a query without data back to "pending", so the guard's spinner and the
+  page took turns forever.
+- **404 page:** its own title, the address that wasn't found, and the useful next step (home and log in, or
+  "Go to your websites" when logged in). The server answers unknown app addresses with 200 (it can't tell app
+  routes apart), so the page adds `<meta name="robots" content="noindex">` while it is shown. The crash page and
+  the development-only style guide are `noindex` too.
+- **Every page has its own title**, checked by a test that walks the route table: a page added without a title
+  check fails it.

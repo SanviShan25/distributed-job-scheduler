@@ -31,6 +31,9 @@ import lombok.extern.slf4j.Slf4j;
  * {@code :{recipientId}} appended for each confirmed extra recipient (one job per recipient, so one bad address
  * cannot hold up or fail the others).
  *
+ * <p>Monitors of the demo account never send alerts: the transition is recorded as {@code DEMO} and nothing is
+ * queued.
+ *
  * <p>Recipients: the owner (if verified and not unsubscribed from this monitor) and the monitor's CONFIRMED extra
  * recipients. Every alert email carries its own single-use unsubscribe token (in the job's {@code secret},
  * which is redacted once the job finishes).
@@ -74,6 +77,12 @@ public class AlertService {
             Map<String, String> params) {
         if (alreadyHandled(incidentId, transition)) {
             log.debug("Alert {} for incident {} already handled", transition, incidentId);
+            return;
+        }
+        if (ownedByDemo(monitor)) {
+            // Demo mode: the outage shows in the app as usual, but nobody is emailed about it.
+            record(monitor, incidentId, transition, "DEMO");
+            log.info("No alert for monitor {} ({}): it belongs to the demo account", monitor.getId(), transition);
             return;
         }
         String key = "alert:" + incidentId + ":" + transition.name().toLowerCase();
@@ -130,6 +139,11 @@ public class AlertService {
                 + "and lower(r.email) <> lower(u.email) order by r.created_at",
             (rs, n) -> new Recipient(rs.getString("email"), rs.getObject("id", UUID.class)), monitor.getId()));
         return recipients;
+    }
+
+    private boolean ownedByDemo(Monitor monitor) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("select exists (select 1 from monitors m join users u "
+            + "on u.id = m.user_id where m.id = ? and u.demo)", Boolean.class, monitor.getId()));
     }
 
     private boolean alreadyHandled(UUID incidentId, Transition transition) {

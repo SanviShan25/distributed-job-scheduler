@@ -1,0 +1,18 @@
+# Added on top of docker-compose.yml for the end-to-end stack (see stack.sh).
+services:
+  # The data is thrown away after every run, so durability only costs time: without fsync, a slow or busy
+  # disk (common with Docker Desktop) can't stall every write for seconds and make the tests time out.
+  postgres:
+    command:
+      ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+  redis:
+    command:
+      ["sh", "-c", 'exec redis-server --appendonly no --save '''' --requirepass "$$REDIS_PASSWORD"']
+
+  api:
+    environment:
+      # Every test starts its own demo from the same address; the production limit (20/hour) would run
+      # out over a few local runs.
+      PULSECHECK_AUTH_DEMOLOGINSPERIPPERHOUR: "500"
+      # The sign-up test runs every time; the production limit is 5/hour per address.
+      PULSECHECK_AUTH_SIGNUPPERIPPERHOUR: "500"

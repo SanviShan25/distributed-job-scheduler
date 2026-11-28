@@ -24,7 +24,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.PulseCheckProperties;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoProperties;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
@@ -51,6 +54,9 @@ public class AuthController {
     private final SecurityContextRepository securityContextRepository;
     private final CsrfTokenRepository csrfTokenRepository;
     private final PulseCheckProperties props;
+    private final DemoAccount demo;
+    private final DemoProperties demoProps;
+    private final SignupProperties signupProps;
 
     public record SignupRequest(@NotNull String email, @NotNull String password) {}
 
@@ -59,12 +65,18 @@ public class AuthController {
 
     public record LoginRequest(@NotNull String email, @NotNull String password, Boolean rememberMe) {}
 
-    /** {@code monitorLimit}: how many monitors this account may have. */
-    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt, int monitorLimit) {
-        static MeResponse of(AppUser user, int monitorLimit) {
-            return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt(),
-                monitorLimit);
-        }
+    /**
+     * {@code monitorLimit}: how many monitors this account may have; {@code minIntervalSeconds}: its shortest check
+     * interval. {@code demo}: this is a temporary demo sandbox (some actions are not available), deleted at
+     * {@code demoExpiresAt} (null otherwise). {@code demoEnabled} / {@code signupOpen}: as in {@code GET /api/config}.
+     */
+    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt, int monitorLimit,
+        int minIntervalSeconds, boolean demo, Instant demoExpiresAt, boolean demoEnabled, boolean signupOpen) {}
+
+    private MeResponse me(AppUser user) {
+        return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt(),
+            demo.monitorLimit(user), demo.minIntervalSeconds(user), user.isDemo(), user.getDemoExpiresAt(),
+            demoProps.enabled(), signupProps.open());
     }
 
     public record TokenRequest(@NotNull String token) {}
@@ -100,7 +112,38 @@ public class AuthController {
             HttpServletResponse httpResponse) {
         rateLimiter.checkLogin(clientIp(httpRequest), EmailAddresses.normalize(request.email()));
         AppUser user = accounts.authenticate(request.email(), request.password());
-        boolean rememberMe = Boolean.TRUE.equals(request.rememberMe());
+        startSession(user, Boolean.TRUE.equals(request.rememberMe()), httpRequest, httpResponse);
+        return me(user);
+    }
+
+    /**
+     * Demo mode: creates a fresh private sandbox (with sample monitors) and logs the visitor into it, exactly like a
+     * login (new session, rotated session id, new CSRF token) but without a password. The session lasts no longer
+     * than the sandbox. A sandbox this browser was already using is deleted (one visitor, one sandbox).
+     * Rate-limited per client IP; 503 when the maximum number of sandboxes exists; 404 when demo mode is off.
+     */
+    @PostMapping("/demo")
+    public MeResponse demoLogin(@AuthenticationPrincipal SessionUser principal, HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
+        if (!demoProps.enabled()) {
+            throw ApiProblems.notFound("Demo mode is not enabled on this site");
+        }
+        rateLimiter.checkDemoLogin(clientIp(httpRequest));
+        if (principal != null) {
+            demo.deleteSandbox(principal.id()); // no-op for a normal account
+        }
+        AppUser user = demo.createSandbox();
+        startSession(user, false, httpRequest, httpResponse);
+        httpRequest.getSession().setMaxInactiveInterval((int) demoProps.sandboxLifetime().toSeconds());
+        return me(user);
+    }
+
+    /**
+     * The session id is always rotated (an existing session gets a new id, so a pre-login id planted by an
+     * attacker is useless) and a new CSRF token is issued.
+     */
+    private void startSession(AppUser user, boolean rememberMe, HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
         if (rememberMe) {
             httpRequest.setAttribute(SpringSessionRememberMeServices.REMEMBER_ME_LOGIN_ATTR, true);
         }
@@ -119,11 +162,15 @@ public class AuthController {
         SecurityContextHolder.setContext(context);
         securityContextRepository.saveContext(context, httpRequest, httpResponse);
         rotateCsrfToken(httpRequest, httpResponse);
-        return MeResponse.of(user, props.maxMonitorsPerUser());
     }
 
+    /** Ends the session. Logging out of a demo sandbox also deletes it (nobody can log back in to it). */
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(HttpServletRequest request, HttpServletResponse response) {
+    public ResponseEntity<Void> logout(@AuthenticationPrincipal SessionUser principal, HttpServletRequest request,
+            HttpServletResponse response) {
+        if (principal != null) {
+            demo.deleteSandbox(principal.id()); // no-op for a normal account
+        }
         HttpSession session = request.getSession(false);
         if (session != null) {
             session.invalidate();
@@ -143,9 +190,9 @@ public class AuthController {
         if (principal == null) {
             return ResponseEntity.noContent().build();
         }
-        AppUser user = users.findById(principal.id()).orElse(null);
+        AppUser user = users.isActive(principal.id()) ? users.findById(principal.id()).orElse(null) : null;
         if (user == null) {
-            // The account was deleted while this session was alive.
+            // The account was deleted (or its demo sandbox expired) while this session was alive.
             HttpSession session = request.getSession(false);
             if (session != null) {
                 session.invalidate();
@@ -153,7 +200,7 @@ public class AuthController {
             SecurityContextHolder.clearContext();
             return ResponseEntity.noContent().build();
         }
-        return ResponseEntity.ok(MeResponse.of(user, props.maxMonitorsPerUser()));
+        return ResponseEntity.ok(me(user));
     }
 
     /** Confirms the email address with the token from the verification link. Works without being logged in. */

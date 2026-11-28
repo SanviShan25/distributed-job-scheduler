@@ -17,6 +17,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.ErrorResponseException;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailJob;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
@@ -45,6 +46,7 @@ public class AccountManagementService {
     private final AuthProtectionProperties protection;
     private final FindByIndexNameSessionRepository<? extends Session> sessions;
     private final TransactionTemplate tx;
+    private final DemoAccount demo;
 
     // ------------------------------------------------------------------ email verification
 
@@ -58,6 +60,7 @@ public class AccountManagementService {
 
     /** @return false if the address was already verified (nothing sent) */
     public boolean resendVerification(UUID userId) {
+        demo.refuseIfDemo(userId, "send verification emails");
         AppUser user = existing(userId);
         if (user.isEmailVerified()) {
             return false;
@@ -70,7 +73,8 @@ public class AccountManagementService {
 
     /**
      * Emails a 1 h reset link if the address has an account; does nothing otherwise. The caller answers
-     * the same way in both cases, so this cannot be used to discover accounts.
+     * the same way in both cases, so this cannot be used to discover accounts. The demo account never gets one
+     * (nothing is ever emailed to it, and it can't have a password).
      */
     @Transactional
     public void forgotPassword(String rawEmail) {
@@ -78,7 +82,7 @@ public class AccountManagementService {
         if (!EmailAddresses.isValid(email)) {
             return;
         }
-        users.findByEmail(email).ifPresent(user -> {
+        users.findByEmail(email).filter(user -> !user.isDemo()).ifPresent(user -> {
             AuthTokenService.IssuedToken issued = tokens.issue(user.getId(), AuthTokenService.Purpose.PASSWORD_RESET,
                 protection.resetTokenTtl());
             outbox.enqueue(new EmailJob(EmailJob.Template.PASSWORD_RESET, user.getEmail(),
@@ -111,6 +115,7 @@ public class AccountManagementService {
 
     /** Changes the password and logs out every <em>other</em> session; the current one stays. */
     public void changePassword(UUID userId, String currentPassword, String newPassword, String currentSessionId) {
+        demo.refuseIfDemo(userId, "change its password");
         AppUser user = existing(userId);
         requirePassword(user, currentPassword);
         AccountService.validatePassword(newPassword);
@@ -129,6 +134,7 @@ public class AccountManagementService {
      * deleted monitors run as no-ops. The password is verified before the transaction starts.
      */
     public void deleteAccount(UUID userId, String password) {
+        demo.refuseIfDemo(userId, "be deleted");
         AppUser user = existing(userId);
         requirePassword(user, password);
         int schedules = tx.execute(status -> {

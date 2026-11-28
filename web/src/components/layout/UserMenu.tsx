@@ -5,8 +5,11 @@ import { useLogout } from "../../auth/user";
 import { cn } from "../../lib/cn";
 import { Spinner } from "../ui";
 
-/** The account button in the header: shows who is logged in and offers "Log out". */
-export function UserMenu({ email }: { email: string }) {
+/**
+ * The account button in the header: shows who is logged in and offers "Log out". For a demo account,
+ * logging out ends (deletes) the demo, so the button says so.
+ */
+export function UserMenu({ email, demo = false }: { email: string; demo?: boolean }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -89,7 +92,13 @@ export function UserMenu({ email }: { email: string }) {
                 ) : (
                   <LogOut aria-hidden="true" className="size-5 text-ink-muted" />
                 )}
-                {logout.isPending ? "Logging out…" : "Log out"}
+                {logout.isPending
+                  ? demo
+                    ? "Ending the demo…"
+                    : "Logging out…"
+                  : demo
+                    ? "End the demo"
+                    : "Log out"}
               </button>
             </li>
           </ul>

@@ -1,0 +1,20 @@
+# The public pages (home, log in, sign up) may be indexed. The API, the logged-in app and the pages
+# opened from email links (which carry one-time tokens) may not.
+User-agent: *
+Allow: /$
+Allow: /login
+Allow: /signup
+Disallow: /api/
+Disallow: /dashboard
+Disallow: /monitors/
+Disallow: /settings/
+Disallow: /check-inbox
+Disallow: /verify-email
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /alert-recipients/
+Disallow: /jobs
+Disallow: /schedules
+Disallow: /actuator/
+Disallow: /swagger-ui
+Disallow: /v3/

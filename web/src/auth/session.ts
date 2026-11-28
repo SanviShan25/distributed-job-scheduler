@@ -5,8 +5,10 @@
  *   reset elsewhere, account deleted). The user is sent to log in and then back to the same page.
  * - "logged-out": the user chose to log out. They go to the login page without a "next" page.
  * - "account-deleted": the user deleted their account. Like "logged-out", with its own message.
+ * - "demo-ended": a demo account ran out of time or its visitor logged out; it is deleted on the
+ *   server. The visitor goes back to the home page, where they can start a new demo.
  */
-export type SessionEndReason = "expired" | "logged-out" | "account-deleted" | null;
+export type SessionEndReason = "expired" | "logged-out" | "account-deleted" | "demo-ended" | null;
 
 let reason: SessionEndReason = null;
 const listeners = new Set<() => void>();

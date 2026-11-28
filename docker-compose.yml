@@ -47,6 +47,9 @@ services:
       PULSECHECK_EMAIL_PROVIDER: "${PULSECHECK_EMAIL_PROVIDER:-logging}"
       RESEND_API_KEY: "${RESEND_API_KEY:-}"
       EMAIL_FROM: "${EMAIL_FROM:-PulseCheck <onboarding@resend.dev>}"
+      # Public demo switches (API only). See .env.example.
+      PULSECHECK_DEMO_ENABLED: "${PULSECHECK_DEMO_ENABLED:-false}"
+      PULSECHECK_SIGNUP_ALLOWED_EMAILS: "${PULSECHECK_SIGNUP_ALLOWED_EMAILS:-}"
     ports: ["8080:8080"]
     expose: ["9091"]   # actuator: internal network only
     depends_on:

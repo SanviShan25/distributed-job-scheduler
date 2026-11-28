@@ -31,6 +31,26 @@ export const alice: User = {
   emailVerified: true,
   createdAt: "2026-11-20T10:00:00Z",
   monitorLimit: 10,
+  minIntervalSeconds: 60,
+  demo: false,
+  demoExpiresAt: null,
+  demoEnabled: false,
+  signupOpen: true,
+};
+
+/** A private demo account with 2 h 30 min left (created 30 minutes before `demoNow`). */
+export const demoNow = Date.parse("2026-11-28T12:00:00Z");
+export const demoVisitor: User = {
+  id: "0b6f3c2e-5d4a-4e1b-9c8d-7a6b5c4d3e2f",
+  email: "demo-0b6f3c2e-5d4a-4e1b-9c8d-7a6b5c4d3e2f@pulsecheck.invalid",
+  emailVerified: true,
+  createdAt: "2026-11-28T11:30:00Z",
+  monitorLimit: 3,
+  minIntervalSeconds: 300,
+  demo: true,
+  demoExpiresAt: "2026-11-28T14:30:00Z",
+  demoEnabled: true,
+  signupOpen: false,
 };
 
 export const loggedIn =

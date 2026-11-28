@@ -21,6 +21,7 @@ import org.springframework.web.ErrorResponseException;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.auth.EmailAddresses;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailJob;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
 import com.sanvi.jobscheduler.security.RedisRateLimiter;
@@ -57,6 +58,7 @@ public class AlertRecipientService {
     private final EmailOutbox outbox;
     private final AlertProperties props;
     private final RedisRateLimiter limiter;
+    private final DemoAccount demo;
 
     private record OwnedMonitor(UUID id, String name, String url, UUID ownerId, String ownerEmail) {}
 
@@ -85,6 +87,7 @@ public class AlertRecipientService {
     /** Adds an address as PENDING and emails it a confirmation link. Re-adding an unsubscribed address asks again. */
     @Transactional
     public Recipient add(UUID ownerId, UUID monitorId, String rawEmail) {
+        demo.refuseIfDemo(ownerId, "add alert recipients");
         OwnedMonitor monitor = lockOwnedMonitor(ownerId, monitorId);
         String email = EmailAddresses.normalize(rawEmail);
         if (!EmailAddresses.isValid(email)) {
@@ -122,6 +125,7 @@ public class AlertRecipientService {
     /** Sends a PENDING recipient a fresh confirmation link (earlier links stop working). */
     @Transactional
     public Recipient resendConfirmation(UUID ownerId, UUID monitorId, UUID recipientId) {
+        demo.refuseIfDemo(ownerId, "send confirmation emails");
         OwnedMonitor monitor = lockOwnedMonitor(ownerId, monitorId);
         Recipient recipient = get(monitorId, recipientId);
         if (recipient.status() != Status.PENDING) {
@@ -135,6 +139,7 @@ public class AlertRecipientService {
 
     @Transactional
     public void remove(UUID ownerId, UUID monitorId, UUID recipientId) {
+        demo.refuseIfDemo(ownerId, "manage alert recipients");
         lockOwnedMonitor(ownerId, monitorId);
         get(monitorId, recipientId);
         jdbc.update("delete from alert_recipients where id = ?", recipientId);

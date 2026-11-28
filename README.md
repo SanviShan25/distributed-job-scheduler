@@ -15,6 +15,7 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 
 ## Contents
 
+- [Try it](#try-it)
 - [Architecture](#architecture)
 - [Job state machine](#job-state-machine)
 - [Delivery guarantee](#delivery-guarantee)
@@ -32,6 +33,34 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 - [Results](#results)
 - [Monitoring](#monitoring)
 - [Known limitations](#known-limitations)
+- [Running on free tiers](#running-on-free-tiers)
+
+---
+
+## Try it
+
+**PulseCheck**, the website uptime monitor built on this scheduler, has a public demo: *link added after
+deployment*.
+
+On the home page, **Try the demo** gives you a private demo account straight away, with no sign-up:
+
+- it starts with two sample websites; you can add one more (3 at most), checked every 5 minutes or less often;
+- outages, uptime and response-time charts work as in a real account, but **no emails are sent**;
+- there is no password, so password changes, account deletion and extra alert recipients aren't offered;
+- only you can see it, and it is **deleted after 3 hours** (or when you choose "End the demo").
+
+On the public demo, sign-ups may be limited to invited addresses (`PULSECHECK_SIGNUP_ALLOWED_EMAILS`), because
+emails can only be delivered to the owner without a verified domain.
+
+**Run it locally with the demo:** set `PULSECHECK_DEMO_ENABLED=true` in `.env`, run `docker compose up --build`,
+and open http://localhost:8080.
+
+![The PulseCheck dashboard: three websites with their status, 24-hour uptime and average response time](docs/images/dashboard.png)
+
+![A website's page: status, address, uptime over 24 hours, 7 days and 30 days, and a 24-hour response-time chart](docs/images/monitor-details.png)
+
+<sub>Screenshots with sample data: 24 hours of generated checks, including one 20-minute outage, captured by
+`npm run e2e:screenshots` (see [Testing](#testing)).</sub>
 
 ---
 
@@ -260,9 +289,11 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | `POST /api/auth/signup` | anyone | `{email, password}`; sends the verification link |
 | `POST /api/auth/verify` | anyone | `{token}` from the verification link |
 | `POST /api/auth/login` | anyone | `{email, password, rememberMe?}`; starts a session |
+| `POST /api/auth/demo` | anyone | Demo mode only (404 otherwise): creates a private 3-hour sandbox with 2 sample monitors and logs in to it; 20/hour per IP; `503` `demo_busy` when 20 are in use |
+| `GET /api/config` | anyone | `{demoEnabled, signupOpen}` for the web app |
 | `POST /api/auth/forgot-password` | anyone | `{email}`; always the same answer |
 | `POST /api/auth/reset-password` | anyone | `{token, newPassword}`; logs out every session |
-| `GET /api/auth/me` | anyone | The current user, with `monitorLimit` (how many monitors the account may have); `204 No Content` when nobody is logged in |
+| `GET /api/auth/me` | anyone | The current user, with `monitorLimit`, `minIntervalSeconds`, `demo` and `demoExpiresAt` (for a demo sandbox) and `demoEnabled`/`signupOpen`; `204 No Content` when nobody is logged in |
 | `POST /api/auth/logout` | logged in | Ends the session |
 | `POST /api/auth/resend-verification` | logged in | New verification link (3/hour) |
 | `POST /api/auth/change-password` | logged in | `{currentPassword, newPassword}`; logs out other sessions |
@@ -502,6 +533,8 @@ Every property can be set as an environment variable using Spring's relaxed bind
 | `PULSECHECK_EMAIL_PROVIDER` | `logging` | `logging` (write emails to the worker log) or `resend` |
 | `RESEND_API_KEY` | *(empty)* | required with `resend` |
 | `EMAIL_FROM` | `PulseCheck <onboarding@resend.dev>` | sender; must be on a domain verified in Resend to reach anyone but yourself |
+| `PULSECHECK_DEMO_ENABLED` | `false` | public demo: "Try the demo" gives each visitor a private sandbox for 3 hours (no emails, max 3 monitors, checks every 5 min or slower, max 20 at once) |
+| `PULSECHECK_SIGNUP_ALLOWED_EMAILS` | *(empty)* | comma-separated addresses that may sign up; empty means anyone |
 
 **Worker (`worker.*`)**
 
@@ -636,7 +669,30 @@ The handler must be on the classpath of both the API (which validates `type`) an
 cd web && npm test   # web app tests (see Web app)
 ```
 
-CI also lints, tests and builds `web/`, and builds the Docker image.
+CI also lints, tests and builds `web/`, builds the Docker image, and runs the end-to-end tests.
+
+**End-to-end tests** (Playwright, in `web/e2e/`) run a real browser against the whole stack: the Docker image
+serving the web app, Postgres, Redis and a worker, with demo mode on and emails written to the log. They
+cover: home page → "Try the demo" → add a website → see it on the dashboard → its page and chart → pause and
+resume → delete; restricted actions not being offered in the demo; demos being private to each visitor;
+ending a demo; logged-out visitors being sent to log in; limited sign-ups; and the page running under the
+strict Content-Security-Policy without errors. The worker really checks the websites, so they need internet
+access.
+
+```bash
+cd web
+npx playwright install chromium   # once
+npm run e2e:stack:up              # builds and starts its own Compose project (pulsecheck-e2e) on :8080
+npm run e2e
+npm run e2e:stack:down            # stops it and deletes its data
+```
+
+The stack uses `web/e2e/stack/e2e.env`, not your `.env`, and its own volumes, so it never touches your
+development data. Stop a development stack first if it is using port 8080.
+
+`npm run e2e:screenshots` (same stack) captures `docs/images/dashboard.png`, `docs/images/monitor-details.png`,
+the landing page's dashboard image and the link-preview image (`web/public/og-image.png`). It writes 24 hours of
+sample check history (with one short outage) into that run's own demo, so the charts have something to show.
 
 Integration tests start throw-away `postgres:16` and `redis:7` containers through Testcontainers `@ServiceConnection`; no local Postgres or Redis is needed. Background `@Scheduled` tasks are disabled in tests (`scheduler.scheduling-enabled=false`) so tests can call the sweeps deterministically. Coverage includes:
 
@@ -716,4 +772,21 @@ The ≈31 s matches the design: the killed worker claimed the jobs at ≈14:08:0
 - **Single Redis.** No Redis Cluster/Sentinel configuration is included.
 - **Handler registry is shared.** The API validates `type` against the handlers on its own classpath, so API and workers must ship the same handler set.
 - **API keys are static** (environment config): no per-key scopes, rotation endpoint or key store.
+
+## Running on free tiers
+
+*To be filled in with the deployment.* What this section will cover:
+
+- **Where each part runs:** the API (which also serves the web app), the worker, Postgres and Redis, and on
+  which free plans.
+- **Settings for the public demo:** `PULSECHECK_DEMO_ENABLED=true`, `PULSECHECK_SIGNUP_ALLOWED_EMAILS` (the
+  owner's address), `PULSECHECK_EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM`,
+  `PULSECHECK_APP_BASE_URL` (the public address), `API_KEYS`, and the database and Redis connection settings.
+- **Behind the host's proxy:** the client IP for the per-IP limits (`server.forward-headers-strategy`, see
+  [Brute-force protection](docs/DESIGN.md#brute-force-protection)), and an absolute `og:image` URL for link
+  previews.
+- **Free-tier limits and what they mean for the demo:** sleeping services, database size and lifetime, and
+  how the demo caps (20 sandboxes, 3 websites each, checks every 5 minutes, 3-hour lifetime) keep within them.
+- **Checking it works:** the end-to-end tests can be pointed at the deployment with `E2E_BASE_URL`.
+
 # distributed-job-scheduler

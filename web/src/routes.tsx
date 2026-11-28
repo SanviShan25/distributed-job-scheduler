@@ -3,14 +3,10 @@ import { PublicOnly, RequireAuth } from "./auth/guards";
 import { AppLayout } from "./components/layout/AppLayout";
 import { AuthLayout } from "./components/layout/AuthLayout";
 import { RootLayout } from "./components/layout/RootLayout";
-import { AccountSettingsPage } from "./pages/AccountSettingsPage";
-import { AddMonitorPage } from "./pages/AddMonitorPage";
 import { CheckInboxPage } from "./pages/CheckInboxPage";
-import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
-import { HomePage } from "./pages/HomePage";
+import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
-import { MonitorPage } from "./pages/MonitorPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { RouteErrorPage } from "./pages/RouteErrorPage";
@@ -40,10 +36,11 @@ export const routes: RouteObject[] = [
         // Logged-in users skip these and go to the app.
         element: <PublicOnly />,
         children: [
+          // The landing page has its own full-width layout.
+          { index: true, element: <LandingPage /> },
           {
             element: <AuthLayout />,
             children: [
-              { index: true, element: <HomePage /> },
               { path: "login", element: <LoginPage /> },
               { path: "signup", element: <SignupPage /> },
             ],
@@ -67,11 +64,32 @@ export const routes: RouteObject[] = [
           {
             element: <AppLayout />,
             children: [
-              { path: "dashboard", element: <DashboardPage /> },
-              { path: "monitors/new", element: <AddMonitorPage /> },
+              // The app's pages load on first use, so visitors to the home page don't download them.
+              {
+                path: "dashboard",
+                lazy: async () => ({
+                  Component: (await import("./pages/DashboardPage")).DashboardPage,
+                }),
+              },
+              {
+                path: "monitors/new",
+                lazy: async () => ({
+                  Component: (await import("./pages/AddMonitorPage")).AddMonitorPage,
+                }),
+              },
               // Alert emails link here ("View monitor").
-              { path: "monitors/:monitorId", element: <MonitorPage /> },
-              { path: "settings/account", element: <AccountSettingsPage /> },
+              {
+                path: "monitors/:monitorId",
+                lazy: async () => ({
+                  Component: (await import("./pages/MonitorPage")).MonitorPage,
+                }),
+              },
+              {
+                path: "settings/account",
+                lazy: async () => ({
+                  Component: (await import("./pages/AccountSettingsPage")).AccountSettingsPage,
+                }),
+              },
             ],
           },
         ],

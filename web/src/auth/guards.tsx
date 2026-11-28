@@ -3,6 +3,7 @@ import { Navigate, Outlet, useLocation, useSearchParams } from "react-router";
 import { FullPageError, FullPageSpinner } from "../components/layout/FullPageStatus";
 import { loginPathFor, safeNextPath } from "./redirects";
 import { sessionEnd } from "./session";
+import { useAppConfig } from "./demo";
 import { useCurrentUser } from "./user";
 
 /** Pages for logged-in users. Anyone else is sent to log in, and back here afterwards. */
@@ -22,6 +23,9 @@ export function RequireAuth() {
     if (endReason === "account-deleted") {
       return <Navigate to="/login" replace state={{ accountDeleted: true }} />;
     }
+    if (endReason === "demo-ended") {
+      return <Navigate to="/" replace state={{ demoEnded: true }} />;
+    }
     const here = location.pathname + location.search + location.hash;
     return (
       <Navigate
@@ -34,12 +38,15 @@ export function RequireAuth() {
   return <Outlet />;
 }
 
-/** Login, sign-up and the home page: logged-in users go straight on to the app. */
+/** Login, sign-up and the home page: logged-in users go straight on to the app (or ?next=). */
 export function PublicOnly() {
   const { data: user, isPending } = useCurrentUser();
+  // Fetched alongside the user (not after), so the page appears once, complete: a "Try the demo" button
+  // popping in later would push the rest of the page down.
+  const config = useAppConfig();
   const [params] = useSearchParams();
 
-  if (isPending) return <FullPageSpinner />;
+  if (isPending || config.isPending) return <FullPageSpinner />;
   if (user) return <Navigate to={safeNextPath(params.get("next"))} replace />;
   // Also shown if the user could not be loaded: these pages work without it.
   return <Outlet />;

@@ -15,7 +15,8 @@ import lombok.RequiredArgsConstructor;
 
 /**
  * The logged-in PulseCheck user for the current request. Every monitor, check and incident query is
- * scoped to this id. A session whose account has since been deleted is treated as logged out.
+ * scoped to this id. A session whose account has since been deleted, or whose demo sandbox has expired (cleanup may
+ * not have run yet), is treated as logged out.
  */
 @Component
 @Profile("api")
@@ -28,7 +29,7 @@ public class CurrentUser {
         if (authentication == null || !(authentication.getPrincipal() instanceof SessionUser user)) {
             throw AccountService.invalidCredentials();
         }
-        if (!users.existsById(user.id())) {
+        if (!users.isActive(user.id())) {
             throw AccountService.invalidCredentials();
         }
         return user.id();
