@@ -42,6 +42,10 @@ public class AuthRateLimiter {
         consume("signup:ip:" + clientIp, props.signupPerIpPerHour(), 3600, "Too many sign-ups");
     }
 
+    public void checkDemoLogin(String clientIp) {
+        consume("demo:ip:" + clientIp, props.demoLoginsPerIpPerHour(), 3600, "Too many demo logins");
+    }
+
     public void checkResendVerification(java.util.UUID userId) {
         consume("resend:user:" + userId, props.resendVerificationPerUserPerHour(), 3600,
             "Too many verification emails requested");

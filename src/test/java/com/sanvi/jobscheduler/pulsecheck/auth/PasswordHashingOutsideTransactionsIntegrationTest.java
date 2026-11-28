@@ -16,6 +16,8 @@ import org.springframework.session.Session;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoProperties;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 import com.sanvi.jobscheduler.support.AbstractIntegrationTest;
@@ -31,6 +33,9 @@ class PasswordHashingOutsideTransactionsIntegrationTest extends AbstractIntegrat
     @Autowired EmailOutbox outbox;
     @Autowired FindByIndexNameSessionRepository<? extends Session> sessions;
     @Autowired TransactionTemplate tx;
+    @Autowired SignupProperties signupProps;
+    @Autowired DemoProperties demoProps;
+    @Autowired DemoAccount demo;
 
     /** Delegates to the real encoder and records whether a transaction was active during each call. */
     static final class RecordingEncoder implements PasswordEncoder {
@@ -70,9 +75,9 @@ class PasswordHashingOutsideTransactionsIntegrationTest extends AbstractIntegrat
     void setUp() {
         jdbc.update("delete from users");
         encoder = new RecordingEncoder(realEncoder);
-        accounts = new AccountService(jdbc, encoder, users, protection, tokens, outbox, tx);
+        accounts = new AccountService(jdbc, encoder, users, protection, tokens, outbox, tx, signupProps, demoProps);
         management = new AccountManagementService(users, accounts, tokens, encoder, jdbc, outbox, protection,
-            sessions, tx);
+            sessions, tx, demo);
     }
 
     private UUID userId(String email) {

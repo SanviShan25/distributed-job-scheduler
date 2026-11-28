@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoProperties;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailJob;
 import com.sanvi.jobscheduler.pulsecheck.email.EmailOutbox;
@@ -34,6 +35,8 @@ public class AccountService {
     public static final int MAX_PASSWORD_LENGTH = 128;
 
     public static final String INVALID_CREDENTIALS = "Invalid email or password";
+    /** Machine-readable {@code code} of a sign-up refused because sign-ups are limited. */
+    public static final String SIGNUP_CLOSED_CODE = "signup_closed";
 
     private final JdbcTemplate jdbc;
     private final PasswordEncoder passwordEncoder;
@@ -42,11 +45,14 @@ public class AccountService {
     private final AuthTokenService tokens;
     private final EmailOutbox outbox;
     private final TransactionTemplate tx;
+    private final SignupProperties signupProps;
+    private final DemoProperties demoProps;
     /** Compared against when the email is unknown, so both paths cost one full hash check. */
     private final String dummyHash;
 
     public AccountService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, AppUserRepository users,
-            AuthProtectionProperties protection, AuthTokenService tokens, EmailOutbox outbox, TransactionTemplate tx) {
+            AuthProtectionProperties protection, AuthTokenService tokens, EmailOutbox outbox, TransactionTemplate tx,
+            SignupProperties signupProps, DemoProperties demoProps) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.users = users;
@@ -54,6 +60,8 @@ public class AccountService {
         this.tokens = tokens;
         this.outbox = outbox;
         this.tx = tx;
+        this.signupProps = signupProps;
+        this.demoProps = demoProps;
         this.dummyHash = passwordEncoder.encode("dummy password used for constant-time login checks");
     }
 
@@ -67,11 +75,17 @@ public class AccountService {
      * The password is hashed first, outside any transaction (Argon2 is deliberately slow and must not hold
      * a database connection); then the account, its verification token and the email job are written in
      * one short transaction. The email is sent by a worker afterwards.
+     *
+     * <p>When sign-ups are limited ({@code pulsecheck.signup.allowed-emails}), any other address is refused with
+     * the same answer, whether or not it has an account, so this cannot be used to discover accounts either.
      */
     public SignupResult signup(String rawEmail, String password) {
         String email = EmailAddresses.normalize(rawEmail);
         if (!EmailAddresses.isValid(email)) {
             throw ApiProblems.badRequest("Please enter a valid email address");
+        }
+        if (!signupProps.allows(email)) {
+            throw signupClosed();
         }
         validatePassword(password);
 
@@ -166,6 +180,15 @@ public class AccountService {
         if (Boolean.TRUE.equals(nowLocked)) {
             log.warn("Account {} locked for {} after {} failed logins", user.getId(), protection.lockDuration(), max);
         }
+    }
+
+    private ErrorResponseException signupClosed() {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN,
+            "Sign-ups are limited on this site, and this email address isn't on the list."
+                + (demoProps.enabled() ? " You can try the demo account instead." : ""));
+        problem.setTitle("Sign-ups are limited");
+        problem.setProperty("code", SIGNUP_CLOSED_CODE);
+        return new ErrorResponseException(HttpStatus.FORBIDDEN, problem, null);
     }
 
     public static ErrorResponseException invalidCredentials() {

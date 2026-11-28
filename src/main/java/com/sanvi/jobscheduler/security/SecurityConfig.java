@@ -42,7 +42,7 @@ import jakarta.servlet.http.HttpServletResponse;
  * single-page-app pattern: a readable {@code XSRF-TOKEN} cookie whose value must be echoed in the
  * {@code X-XSRF-TOKEN} header on every state-changing request.
  * <ul>
- *   <li>public: signup, login, csrf, verify, forgot-password, reset-password</li>
+ *   <li>public: signup, login, demo, csrf, verify, forgot-password, reset-password, and {@code GET /api/config}</li>
  *   <li>logged-in user: me, logout, resend-verification, change-password, account (DELETE)</li>
  *   <li>{@code /api/monitors/**} and anything else under {@code /api}: logged-in user</li>
  * </ul>
@@ -120,10 +120,10 @@ public class SecurityConfig {
             .exceptionHandling(ex -> ex.authenticationEntryPoint(notLoggedIn).accessDeniedHandler(denied))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/verify",
-                    "/api/auth/forgot-password", "/api/auth/reset-password").permitAll()
+                    "/api/auth/forgot-password", "/api/auth/reset-password", "/api/auth/demo").permitAll()
                 // "Who is logged in?" has a normal answer for nobody: 204 (see AuthController.me), not a 401
                 // that browsers log as an error on every visit by a logged-out user.
-                .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/api/auth/me").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/api/auth/me", "/api/config").permitAll()
                 .anyRequest().authenticated());
         return http.build();
     }

@@ -6,6 +6,7 @@ import java.util.UUID;
 
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -23,8 +24,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.ErrorResponseException;
 
+import com.sanvi.jobscheduler.api.ApiProblems;
 import com.sanvi.jobscheduler.pulsecheck.PulseCheckProperties;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoProperties;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
 import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 
@@ -51,6 +56,9 @@ public class AuthController {
     private final SecurityContextRepository securityContextRepository;
     private final CsrfTokenRepository csrfTokenRepository;
     private final PulseCheckProperties props;
+    private final DemoAccount demo;
+    private final DemoProperties demoProps;
+    private final SignupProperties signupProps;
 
     public record SignupRequest(@NotNull String email, @NotNull String password) {}
 
@@ -59,12 +67,16 @@ public class AuthController {
 
     public record LoginRequest(@NotNull String email, @NotNull String password, Boolean rememberMe) {}
 
-    /** {@code monitorLimit}: how many monitors this account may have. */
-    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt, int monitorLimit) {
-        static MeResponse of(AppUser user, int monitorLimit) {
-            return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt(),
-                monitorLimit);
-        }
+    /**
+     * {@code monitorLimit}: how many monitors this account may have. {@code demo}: this is the shared demo account
+     * (some actions are not available). {@code demoEnabled} / {@code signupOpen}: as in {@code GET /api/config}.
+     */
+    public record MeResponse(UUID id, String email, boolean emailVerified, Instant createdAt, int monitorLimit,
+        boolean demo, boolean demoEnabled, boolean signupOpen) {}
+
+    private MeResponse me(AppUser user) {
+        return new MeResponse(user.getId(), user.getEmail(), user.isEmailVerified(), user.getCreatedAt(),
+            demo.monitorLimit(user), user.isDemo(), demoProps.enabled(), signupProps.open());
     }
 
     public record TokenRequest(@NotNull String token) {}
@@ -100,7 +112,36 @@ public class AuthController {
             HttpServletResponse httpResponse) {
         rateLimiter.checkLogin(clientIp(httpRequest), EmailAddresses.normalize(request.email()));
         AppUser user = accounts.authenticate(request.email(), request.password());
-        boolean rememberMe = Boolean.TRUE.equals(request.rememberMe());
+        startSession(user, Boolean.TRUE.equals(request.rememberMe()), httpRequest, httpResponse);
+        return me(user);
+    }
+
+    /**
+     * Demo mode: logs the visitor into the shared demo account, exactly like a login (new session, rotated session
+     * id, new CSRF token) but without a password. Rate-limited per client IP. 404 when demo mode is off.
+     */
+    @PostMapping("/demo")
+    public MeResponse demoLogin(HttpServletRequest httpRequest, HttpServletResponse httpResponse) {
+        if (!demoProps.enabled()) {
+            throw ApiProblems.notFound("Demo mode is not enabled on this site");
+        }
+        rateLimiter.checkDemoLogin(clientIp(httpRequest));
+        AppUser user = demo.user().orElseThrow(() -> {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                "The demo isn't ready yet. Please try again in a minute.");
+            problem.setTitle("Service Unavailable");
+            return new ErrorResponseException(HttpStatus.SERVICE_UNAVAILABLE, problem, null);
+        });
+        startSession(user, false, httpRequest, httpResponse);
+        return me(user);
+    }
+
+    /**
+     * The session id is always rotated (an existing session gets a new id, so a pre-login id planted by an
+     * attacker is useless) and a new CSRF token is issued.
+     */
+    private void startSession(AppUser user, boolean rememberMe, HttpServletRequest httpRequest,
+            HttpServletResponse httpResponse) {
         if (rememberMe) {
             httpRequest.setAttribute(SpringSessionRememberMeServices.REMEMBER_ME_LOGIN_ATTR, true);
         }
@@ -119,7 +160,6 @@ public class AuthController {
         SecurityContextHolder.setContext(context);
         securityContextRepository.saveContext(context, httpRequest, httpResponse);
         rotateCsrfToken(httpRequest, httpResponse);
-        return MeResponse.of(user, props.maxMonitorsPerUser());
     }
 
     @PostMapping("/logout")
@@ -153,7 +193,7 @@ public class AuthController {
             SecurityContextHolder.clearContext();
             return ResponseEntity.noContent().build();
         }
-        return ResponseEntity.ok(MeResponse.of(user, props.maxMonitorsPerUser()));
+        return ResponseEntity.ok(me(user));
     }
 
     /** Confirms the email address with the token from the verification link. Works without being logged in. */

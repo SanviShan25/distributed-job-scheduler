@@ -9,6 +9,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobStatus;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
 import com.sanvi.jobscheduler.queue.JobQueue;
 import com.sanvi.jobscheduler.repo.JobInserter;
 
@@ -27,6 +28,7 @@ import tools.jackson.databind.json.JsonMapper;
  *       scheduler's drift sweeper enqueues it within about a minute.</li>
  *   <li>The idempotency key is the job's unique {@code idempotency_key}: queuing the same email twice
  *       creates one job ({@code ON CONFLICT DO NOTHING}), and the worker passes the key on to Resend.</li>
+ *   <li>Nothing is ever queued for the demo account's address.</li>
  * </ul>
  */
 @Component
@@ -40,11 +42,20 @@ public class EmailOutbox {
 
     private final JobInserter inserter;
     private final JobQueue queue;
+    private final DemoAccount demo;
 
-    /** @return true if a new email job was created, false if one with this idempotency key already exists */
+    /**
+     * @return true if a new email job was created; false if one with this idempotency key already exists, or the
+     *         email is addressed to the demo account (nothing is ever sent to it)
+     */
     public boolean enqueue(EmailJob email) {
         if (email.idempotencyKey() == null || email.idempotencyKey().isBlank()) {
             throw new IllegalArgumentException("every email needs an idempotency key");
+        }
+        if (demo.isDemoAddress(email.to())) {
+            // Backstop: callers already skip the demo account; this makes sure no path can email it.
+            log.info("Not queuing email {}: it is addressed to the demo account", email.idempotencyKey());
+            return false;
         }
         Instant now = Instant.now();
         Job job = new Job();

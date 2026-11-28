@@ -78,6 +78,20 @@ pulsecheck:
     resend-verification-per-user-per-hour: 3
     forgot-password-per-email-per-hour: 3
     forgot-password-per-ip-per-hour: 10
+    demo-logins-per-ip-per-hour: 20
+  demo:
+    # Public demos: "Try the demo" logs visitors into one shared, password-less account that never gets emails,
+    # can't change its password or be deleted, may have at most 5 monitors, and is reset every night.
+    # Off: the demo account and its reset schedule are removed at startup.
+    enabled: ${PULSECHECK_DEMO_ENABLED:false}
+    # Must be undeliverable (.invalid): nothing is ever sent to it.
+    email: demo@pulsecheck.invalid
+    max-monitors: 5
+    # Nightly reset (a DEMO_RESET job run by the workers), 6-field cron in UTC.
+    reset-cron: "0 0 4 * * *"
+  signup:
+    # Comma-separated addresses that may sign up; empty = anyone. For demos where email can only reach the owner.
+    allowed-emails: ${PULSECHECK_SIGNUP_ALLOWED_EMAILS:}
   alerts:
     # Rolling-hour cap per monitor, including the "alerts paused" note that replaces the last one.
     max-emails-per-monitor-per-hour: 6

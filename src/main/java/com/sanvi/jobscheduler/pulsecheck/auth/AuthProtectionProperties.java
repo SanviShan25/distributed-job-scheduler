@@ -19,6 +19,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param resendVerificationPerUserPerHour verification emails a user can request per hour
  * @param forgotPasswordPerEmailPerHour    reset emails per address per hour
  * @param forgotPasswordPerIpPerHour       reset requests per client IP per hour
+ * @param demoLoginsPerIpPerHour           "Try the demo" logins per client IP per hour (demo mode)
  */
 @ConfigurationProperties(prefix = "pulsecheck.auth")
 public record AuthProtectionProperties(
@@ -32,5 +33,6 @@ public record AuthProtectionProperties(
     @DefaultValue("1h") Duration resetTokenTtl,
     @DefaultValue("3") int resendVerificationPerUserPerHour,
     @DefaultValue("3") int forgotPasswordPerEmailPerHour,
-    @DefaultValue("10") int forgotPasswordPerIpPerHour) {
+    @DefaultValue("10") int forgotPasswordPerIpPerHour,
+    @DefaultValue("20") int demoLoginsPerIpPerHour) {
 }

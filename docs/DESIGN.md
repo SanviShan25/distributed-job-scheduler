@@ -703,3 +703,43 @@ runs while a transaction is active.
   change-password form carries a hidden `autocomplete="username"` field with the account's address, so a
   password manager knows which saved login to update. A test checks every account form's attributes.
 
+### Demo mode and limited sign-ups (V12)
+
+For a public demo on a free tier with no custom domain, Resend can only deliver to the owner's own address, so
+visitors can't receive verification emails. Demo mode lets them try the app anyway.
+
+- **One shared demo account, opt-in** (`pulsecheck.demo.enabled`, default off). This brings back a password-less
+  account, which "Removing the dev user (V8)" argued against, so it is fenced in:
+  - `users.demo` marks it; a partial unique index allows at most one, and a CHECK constraint keeps its
+    `password_hash` null forever, so nothing (not even a password reset) can turn it into a normal account;
+  - its address is `demo@pulsecheck.invalid` (`.invalid` can never be delivered or owned, RFC 2606). Startup
+    refuses to run if a normal account already uses the configured address;
+  - with demo mode off, API startup **deletes** the demo account, its monitors and schedules, and the reset
+    schedule, so turning it off leaves nothing behind.
+- **`POST /api/auth/demo`** logs in exactly like `/login` (same session start: rotated session id, fresh CSRF
+  token, CSRF required) without a password. 20/hour per IP (Redis bucket, fails open like login). 404 when
+  demo mode is off. Visitors share the account, so they see each other's monitors; the nightly reset bounds that.
+- **Restrictions are in the services, not the controllers:** change password, delete account, resend
+  verification, and add/resend/remove extra alert recipients answer `403` with `"code": "demo_restricted"` and
+  a plain-English `detail`. Verification needs no rule: the account is created verified and never gets tokens.
+  Forgot-password for the demo address issues no token and sends nothing (same `202` as always). The account may
+  have at most `pulsecheck.demo.max-monitors` (5) monitors; `monitorLimit` in `/me` reports it.
+- **No email, ever.** Incidents of demo monitors open and resolve normally, and the transition is recorded in
+  `alert_events` with the new outcome `DEMO`, but no email job is queued. As a backstop, `EmailOutbox` refuses
+  any email addressed to the demo account, whichever code path asks.
+- **Nightly reset on our own scheduler.** A `job_schedules` row `pulsecheck:demo-reset` (cron
+  `pulsecheck.demo.reset-cron`, default 04:00 UTC) creates a `DEMO_RESET` job; any worker runs it. In one
+  transaction, holding the demo user's row lock (the same lock monitor creation takes), it deletes the account's
+  monitor schedules and monitors (history, incidents, alert events and recipients cascade), then re-creates the
+  two sample monitors with their schedules and queues an immediate check for each. Running it twice gives the same
+  result, so a retry or duplicate run is harmless. Visitors who are logged in stay logged in. The code is in
+  `DemoAccount`, which has no profile, because workers have no `ScheduleService`/`MonitorService`; the
+  "check now" logic moved to a shared `CheckTrigger`. API startup creates the schedule (`ON CONFLICT (name)`,
+  updated if the cron changed) and seeds the sample monitors when the account has none.
+- **Limited sign-ups** (`pulsecheck.signup.allowed-emails`, comma-separated, empty = anyone). Other addresses get
+  `403` with `"code": "signup_closed"` and the same body whether or not they have an account (the check depends
+  only on the list), so it can't be used to discover accounts. Nothing is created and no email is sent.
+- **`GET /api/config`** (public) returns `{demoEnabled, signupOpen}` so the logged-out web app can show
+  "Try the demo" and explain limited sign-ups. It never exposes the allowlist. `/me` carries the same two switches
+  plus `demo`.
+

@@ -16,17 +16,14 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.stereotype.Service;
 import org.springframework.web.ErrorResponseException;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.sanvi.jobscheduler.api.ApiProblems;
-import com.sanvi.jobscheduler.domain.Job;
 import com.sanvi.jobscheduler.domain.JobSchedule;
-import com.sanvi.jobscheduler.domain.JobStatus;
+import com.sanvi.jobscheduler.pulsecheck.CheckTrigger;
 import com.sanvi.jobscheduler.pulsecheck.HttpCheckJobHandler;
-import com.sanvi.jobscheduler.pulsecheck.PulseCheckProperties;
 import com.sanvi.jobscheduler.pulsecheck.check.UnsafeUrlException;
 import com.sanvi.jobscheduler.pulsecheck.check.UrlSafetyValidator;
+import com.sanvi.jobscheduler.pulsecheck.demo.DemoAccount;
 import com.sanvi.jobscheduler.pulsecheck.domain.AppUser;
 import com.sanvi.jobscheduler.pulsecheck.domain.CheckResult;
 import com.sanvi.jobscheduler.pulsecheck.domain.Incident;
@@ -36,8 +33,6 @@ import com.sanvi.jobscheduler.pulsecheck.repo.AppUserRepository;
 import com.sanvi.jobscheduler.pulsecheck.repo.CheckResultRepository;
 import com.sanvi.jobscheduler.pulsecheck.repo.IncidentRepository;
 import com.sanvi.jobscheduler.pulsecheck.repo.MonitorRepository;
-import com.sanvi.jobscheduler.queue.JobQueue;
-import com.sanvi.jobscheduler.repo.JobRepository;
 import com.sanvi.jobscheduler.schedule.ScheduleService;
 
 import lombok.RequiredArgsConstructor;
@@ -54,18 +49,17 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 @Slf4j
 public class MonitorService {
-    static final int CHECK_TIMEOUT_SECONDS = 30;
-    static final int CHECK_MAX_ATTEMPTS = 3;
+    static final int CHECK_TIMEOUT_SECONDS = CheckTrigger.CHECK_TIMEOUT_SECONDS;
+    static final int CHECK_MAX_ATTEMPTS = CheckTrigger.CHECK_MAX_ATTEMPTS;
 
     private final MonitorRepository monitors;
     private final AppUserRepository users;
     private final CheckResultRepository results;
     private final IncidentRepository incidents;
     private final ScheduleService schedules;
-    private final JobRepository jobs;
-    private final JobQueue queue;
+    private final CheckTrigger checkTrigger;
     private final UrlSafetyValidator urlValidator;
-    private final PulseCheckProperties props;
+    private final DemoAccount demo;
 
     public record MonitorChanges(String name, String url, Integer intervalSeconds, Boolean notifyOwner) {}
 
@@ -79,8 +73,11 @@ public class MonitorService {
             problem.setTitle("Email not verified");
             throw new ErrorResponseException(HttpStatus.FORBIDDEN, problem, null);
         }
-        if (monitors.countByUserId(userId) >= props.maxMonitorsPerUser()) {
-            throw ApiProblems.conflict("You can have at most " + props.maxMonitorsPerUser() + " monitors");
+        int limit = demo.monitorLimit(owner);
+        if (monitors.countByUserId(userId) >= limit) {
+            throw ApiProblems.conflict(owner.isDemo()
+                ? "The demo account can have at most " + limit + " monitors. Delete one to add another."
+                : "You can have at most " + limit + " monitors");
         }
         String url = safeUrl(request.url());
         if (monitors.existsByUserIdAndUrl(userId, url)) {
@@ -273,39 +270,8 @@ public class MonitorService {
 
     // ------------------------------------------------------------------ helpers
 
-    /** Inserts a QUEUED HTTP_CHECK job now and pushes it to Redis once the transaction commits. */
     private void triggerCheck(UUID monitorId) {
-        Instant now = Instant.now();
-        Job job = new Job();
-        job.setId(UUID.randomUUID());
-        job.setType(HttpCheckJobHandler.TYPE);
-        job.setPayload(monitorId.toString());
-        job.setPriority(3); // a user is waiting for the first result
-        job.setStatus(JobStatus.QUEUED);
-        job.setMaxAttempts(CHECK_MAX_ATTEMPTS);
-        job.setTimeoutSeconds(CHECK_TIMEOUT_SECONDS);
-        job.setRunAt(now);
-        job.setCreatedAt(now);
-        job.setUpdatedAt(now);
-        jobs.save(job);
-        Runnable enqueue = () -> {
-            try {
-                queue.enqueue(job.getId(), job.getPriority());
-            } catch (RuntimeException e) {
-                log.warn("Could not enqueue check {} for monitor {}; the drift sweeper will pick it up",
-                    job.getId(), monitorId, e);
-            }
-        };
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    enqueue.run();
-                }
-            });
-        } else {
-            enqueue.run();
-        }
+        checkTrigger.checkNow(monitorId);
     }
 
     private String safeUrl(String url) {

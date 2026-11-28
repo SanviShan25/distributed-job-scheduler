@@ -260,9 +260,11 @@ Design decisions, including exactly how a frontend must handle CSRF, are in [doc
 | `POST /api/auth/signup` | anyone | `{email, password}`; sends the verification link |
 | `POST /api/auth/verify` | anyone | `{token}` from the verification link |
 | `POST /api/auth/login` | anyone | `{email, password, rememberMe?}`; starts a session |
+| `POST /api/auth/demo` | anyone | Demo mode only (404 otherwise): logs in as the shared demo account; 20/hour per IP |
+| `GET /api/config` | anyone | `{demoEnabled, signupOpen}` for the web app |
 | `POST /api/auth/forgot-password` | anyone | `{email}`; always the same answer |
 | `POST /api/auth/reset-password` | anyone | `{token, newPassword}`; logs out every session |
-| `GET /api/auth/me` | anyone | The current user, with `monitorLimit` (how many monitors the account may have); `204 No Content` when nobody is logged in |
+| `GET /api/auth/me` | anyone | The current user, with `monitorLimit` (how many monitors the account may have), `demo` (is it the demo account) and `demoEnabled`/`signupOpen`; `204 No Content` when nobody is logged in |
 | `POST /api/auth/logout` | logged in | Ends the session |
 | `POST /api/auth/resend-verification` | logged in | New verification link (3/hour) |
 | `POST /api/auth/change-password` | logged in | `{currentPassword, newPassword}`; logs out other sessions |
@@ -502,6 +504,8 @@ Every property can be set as an environment variable using Spring's relaxed bind
 | `PULSECHECK_EMAIL_PROVIDER` | `logging` | `logging` (write emails to the worker log) or `resend` |
 | `RESEND_API_KEY` | *(empty)* | required with `resend` |
 | `EMAIL_FROM` | `PulseCheck <onboarding@resend.dev>` | sender; must be on a domain verified in Resend to reach anyone but yourself |
+| `PULSECHECK_DEMO_ENABLED` | `false` | public demo: "Try the demo" logs visitors into a shared demo account (no emails, max 5 monitors, reset nightly) |
+| `PULSECHECK_SIGNUP_ALLOWED_EMAILS` | *(empty)* | comma-separated addresses that may sign up; empty means anyone |
 
 **Worker (`worker.*`)**
 
