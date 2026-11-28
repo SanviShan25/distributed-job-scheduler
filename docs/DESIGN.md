@@ -703,43 +703,67 @@ runs while a transaction is active.
   change-password form carries a hidden `autocomplete="username"` field with the account's address, so a
   password manager knows which saved login to update. A test checks every account form's attributes.
 
-### Demo mode and limited sign-ups (V12)
+### Demo mode: a private sandbox per visitor, and limited sign-ups (V12, V13)
 
 For a public demo on a free tier with no custom domain, Resend can only deliver to the owner's own address, so
 visitors can't receive verification emails. Demo mode lets them try the app anyway.
 
-- **One shared demo account, opt-in** (`pulsecheck.demo.enabled`, default off). This brings back a password-less
-  account, which "Removing the dev user (V8)" argued against, so it is fenced in:
-  - `users.demo` marks it; a partial unique index allows at most one, and a CHECK constraint keeps its
-    `password_hash` null forever, so nothing (not even a password reset) can turn it into a normal account;
-  - its address is `demo@pulsecheck.invalid` (`.invalid` can never be delivered or owned, RFC 2606). Startup
-    refuses to run if a normal account already uses the configured address;
-  - with demo mode off, API startup **deletes** the demo account, its monitors and schedules, and the reset
-    schedule, so turning it off leaves nothing behind.
-- **`POST /api/auth/demo`** logs in exactly like `/login` (same session start: rotated session id, fresh CSRF
-  token, CSRF required) without a password. 20/hour per IP (Redis bucket, fails open like login). 404 when
-  demo mode is off. Visitors share the account, so they see each other's monitors; the nightly reset bounds that.
-- **Restrictions are in the services, not the controllers:** change password, delete account, resend
-  verification, and add/resend/remove extra alert recipients answer `403` with `"code": "demo_restricted"` and
-  a plain-English `detail`. Verification needs no rule: the account is created verified and never gets tokens.
-  Forgot-password for the demo address issues no token and sends nothing (same `202` as always). The account may
-  have at most `pulsecheck.demo.max-monitors` (5) monitors; `monitorLimit` in `/me` reports it.
-- **No email, ever.** Incidents of demo monitors open and resolve normally, and the transition is recorded in
-  `alert_events` with the new outcome `DEMO`, but no email job is queued. As a backstop, `EmailOutbox` refuses
-  any email addressed to the demo account, whichever code path asks.
-- **Nightly reset on our own scheduler.** A `job_schedules` row `pulsecheck:demo-reset` (cron
-  `pulsecheck.demo.reset-cron`, default 04:00 UTC) creates a `DEMO_RESET` job; any worker runs it. In one
-  transaction, holding the demo user's row lock (the same lock monitor creation takes), it deletes the account's
-  monitor schedules and monitors (history, incidents, alert events and recipients cascade), then re-creates the
-  two sample monitors with their schedules and queues an immediate check for each. Running it twice gives the same
-  result, so a retry or duplicate run is harmless. Visitors who are logged in stay logged in. The code is in
-  `DemoAccount`, which has no profile, because workers have no `ScheduleService`/`MonitorService`; the
-  "check now" logic moved to a shared `CheckTrigger`. API startup creates the schedule (`ON CONFLICT (name)`,
-  updated if the cron changed) and seeds the sample monitors when the account has none.
+- **Why a sandbox per visitor rather than one shared demo account.** A first version had one shared account that
+  was reset nightly. Each visitor getting their own account is better because:
+  - *Privacy and trust:* with a shared account, every visitor sees (and can edit, pause or delete) the URLs other
+    visitors typed. Some will paste internal or personal sites. "Private by default" is one of the app's selling
+    points, and a shared account contradicts it on the first page a visitor sees.
+  - *A predictable experience:* one visitor deleting the sample monitors, or filling the monitor limit, breaks the
+    demo for everyone until the nightly reset. A sandbox always starts in the same state.
+  - *Abuse is bounded per visitor,* not by a global reset: each sandbox expires after 3 hours, has at most 3
+    monitors checked every 5 minutes or slower, and there are at most 20 at once. Worst case is
+    20 × 3 checks per 5 minutes, about 0.2 checks per second, comfortably within a free tier.
+  - *It exercises the real code paths:* a sandbox is an ordinary account row with a flag, so per-user isolation
+    (ownership in every query, 404 for others' monitors) is what keeps visitors apart. Nothing demo-specific
+    is needed for that.
+
+  The cost is a little churn (two monitors, two schedules and two checks per "Try the demo") and a capacity limit
+  that can turn visitors away. Both are bounded by the caps and the per-IP rate limit.
+- **Migrations:** V12 added `users.demo` (with an "at most one" index) for the shared account; V13 drops that
+  index, adds `demo_expires_at`, and deletes the V12 shared account, its nightly reset schedule and pending
+  `DEMO_RESET` jobs.
+- **Sandbox accounts are fenced in by the database.** `users.demo` marks them and `demo_expires_at` (required
+  for them, absent otherwise: CHECK) is when they go. A CHECK constraint keeps `password_hash` null, so nothing,
+  not even a password reset, can turn a sandbox into a normal account. Addresses are
+  `demo-{id}@pulsecheck.invalid` (`.invalid` can never be delivered or owned, RFC 2606).
+- **`POST /api/auth/demo`** checks the per-IP limit (20/hour, Redis, fails open like login), then in one
+  transaction takes a Postgres advisory lock (so parallel requests can't exceed the cap), counts *unexpired*
+  sandboxes, refuses with `503` `"code": "demo_busy"` ("The demo is busy. Please try again in a few minutes.",
+  `Retry-After: 300`) at `max-sandboxes`, and otherwise creates the account with the two sample monitors (5-minute
+  interval, each with its schedule and an immediate check). It then starts the session exactly like `/login`
+  (rotated session id, fresh CSRF token, CSRF required), with an idle timeout no longer than the sandbox's life.
+  404 when demo mode is off.
+- **One visitor, one sandbox.** Trying the demo again from a browser that is already in a sandbox deletes the old
+  one first, and logging out deletes it (nobody could log back in to it anyway). Both free capacity early.
+- **Expiry is enforced at once, deletion happens later.** `CurrentUser` and `/me` treat an expired sandbox as
+  logged out (database clock), and expired sandboxes don't count towards the cap, so the cleanup's timing never
+  matters to visitors.
+- **Cleanup on our own scheduler.** API startup creates the `job_schedules` row `pulsecheck:demo-cleanup` (every
+  5 minutes, `ON CONFLICT (name)`, updated if the cron changed); any worker runs the `DEMO_CLEANUP` job. It
+  deletes expired sandboxes in batches of 100, each batch in its own transaction with `FOR UPDATE SKIP LOCKED`
+  (overlapping runs split the work): first their monitor schedules (not owned via a foreign key), then the
+  accounts, which cascades to monitors, check results, incidents, alert events, recipients and tokens. A retried
+  run finds nothing left to do. Stale sessions of deleted sandboxes simply act logged out until Redis expires them.
+  The code is in `DemoAccount`, which has no profile, because workers have no `ScheduleService`/`MonitorService`;
+  the "check now" logic moved to a shared `CheckTrigger`.
+- **Demo mode off** (the default): API startup deletes every sandbox and the cleanup schedule, so turning demo mode
+  off leaves no password-less accounts behind (in the spirit of "Removing the dev user (V8)").
+- **Restrictions are in the services, not the controllers:** change password, delete account (logging out does
+  that), resend verification, and add/resend/remove extra alert recipients answer `403` with
+  `"code": "demo_restricted"` and a plain-English `detail`. Verification needs no rule: sandboxes are created
+  verified and never get tokens. Forgot-password for a sandbox address issues no token and sends nothing (same
+  `202` as always). Monitor limit (`max-monitors`, 3) and shortest interval (`min-interval-seconds`, 300) apply on
+  create and update; `/me` reports `monitorLimit`, `minIntervalSeconds` and `demoExpiresAt`.
+- **No email, ever.** Incidents of sandbox monitors open and resolve normally, and the transition is recorded in
+  `alert_events` with the outcome `DEMO`, but no email job is queued. As a backstop, `EmailOutbox` refuses any
+  email addressed to any sandbox, whichever code path asks.
 - **Limited sign-ups** (`pulsecheck.signup.allowed-emails`, comma-separated, empty = anyone). Other addresses get
   `403` with `"code": "signup_closed"` and the same body whether or not they have an account (the check depends
   only on the list), so it can't be used to discover accounts. Nothing is created and no email is sent.
 - **`GET /api/config`** (public) returns `{demoEnabled, signupOpen}` so the logged-out web app can show
-  "Try the demo" and explain limited sign-ups. It never exposes the allowlist. `/me` carries the same two switches
-  plus `demo`.
-
+  "Try the demo" and explain limited sign-ups. It never exposes the allowlist. `/me` carries the same two switches.

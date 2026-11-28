@@ -15,6 +15,11 @@ import jakarta.persistence.LockModeType;
 public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
     Optional<AppUser> findByEmail(String email);
 
+    /** The account exists and is not an expired demo sandbox (database clock), i.e. it may still be used. */
+    @Query("select count(u) > 0 from AppUser u where u.id = :id "
+        + "and (u.demo = false or u.demoExpiresAt > current_timestamp)")
+    boolean isActive(@Param("id") UUID id);
+
     /** Locks the user row: serializes monitor creation per user so the monitor limit cannot be raced. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from AppUser u where u.id = :id")

@@ -80,15 +80,17 @@ pulsecheck:
     forgot-password-per-ip-per-hour: 10
     demo-logins-per-ip-per-hour: 20
   demo:
-    # Public demos: "Try the demo" logs visitors into one shared, password-less account that never gets emails,
-    # can't change its password or be deleted, may have at most 5 monitors, and is reset every night.
-    # Off: the demo account and its reset schedule are removed at startup.
+    # Public demos: each "Try the demo" creates a private, temporary sandbox account with sample monitors. Sandboxes
+    # never get emails, can't change a password or be deleted by hand, and are deleted when they expire.
+    # Off: every sandbox and the cleanup schedule are removed at startup.
     enabled: ${PULSECHECK_DEMO_ENABLED:false}
-    # Must be undeliverable (.invalid): nothing is ever sent to it.
-    email: demo@pulsecheck.invalid
-    max-monitors: 5
-    # Nightly reset (a DEMO_RESET job run by the workers), 6-field cron in UTC.
-    reset-cron: "0 0 4 * * *"
+    sandbox-lifetime: 3h
+    # Free-tier caps: sandboxes at once (then "the demo is busy"), monitors per sandbox, shortest check interval.
+    max-sandboxes: 20
+    max-monitors: 3
+    min-interval-seconds: 300
+    # Deleting expired sandboxes (a DEMO_CLEANUP job run by the workers), 6-field cron in UTC.
+    cleanup-cron: "0 */5 * * * *"
   signup:
     # Comma-separated addresses that may sign up; empty = anyone. For demos where email can only reach the owner.
     allowed-emails: ${PULSECHECK_SIGNUP_ALLOWED_EMAILS:}

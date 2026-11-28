@@ -1,14 +1,17 @@
 package com.sanvi.jobscheduler.pulsecheck.demo;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.not;
-import org.junit.jupiter.api.AfterEach;
+import static org.hamcrest.Matchers.matchesPattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,11 +23,13 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.jayway.jsonpath.JsonPath;
 import com.sanvi.jobscheduler.pulsecheck.MonitorCheckService;
 import com.sanvi.jobscheduler.pulsecheck.PulseCheckApiTestConfiguration;
 import com.sanvi.jobscheduler.pulsecheck.check.HttpChecker;
@@ -35,19 +40,23 @@ import com.sanvi.jobscheduler.support.AbstractIntegrationTest;
 import com.sanvi.jobscheduler.support.TestBrowser;
 import com.sanvi.jobscheduler.worker.JobHandlerRegistry;
 
+import jakarta.servlet.http.Cookie;
+
 /**
- * Demo mode on, sign-ups limited to one address, and the real auth rate limits (demo logins capped at 3/hour here so
- * the limit is quick to reach). Own application context, so its demo account never meets the other tests.
+ * Demo mode on (at most 4 sandboxes here, so "busy" is quick to reach), sign-ups limited to one address, and the
+ * real auth rate limits (demo logins capped at 3/hour per IP). Own application context.
  */
 @Import(PulseCheckApiTestConfiguration.class)
 @TestPropertySource(properties = {
     "pulsecheck.demo.enabled=true",
+    "pulsecheck.demo.max-sandboxes=4",
     "pulsecheck.signup.allowed-emails= Invited@Example.com , ",
     "pulsecheck.auth.rate-limits-enabled=true",
     "pulsecheck.auth.demo-logins-per-ip-per-hour=3"})
 class DemoModeIntegrationTest extends AbstractIntegrationTest {
 
-    private static final String DEMO_EMAIL = "demo@pulsecheck.invalid";
+    private static final String SAMPLE_A = "https://example.com/";
+    private static final String SAMPLE_B = "https://raw.githubusercontent.com/SanviShan25/pulsecheck-test/main/status.txt";
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
@@ -59,121 +68,174 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
     @Autowired ScheduleRunner scheduleRunner;
     @Autowired JobHandlerRegistry handlers;
 
+    private final AtomicInteger nextIp = new AtomicInteger(1);
     private TestBrowser browser;
 
     @BeforeEach
     void setUp() throws Exception {
-        jdbc.update("delete from users where not demo");
+        demo.removeAll();
+        jdbc.update("delete from users");
         sites.reset();
         startup.onStartup();
-        demo.reset();
         browser = new TestBrowser(mvc).fetchCsrf();
     }
 
-    @AfterEach
-    void tearDown() {
-        sites.reset();
-    }
-
-    private UUID demoId() {
-        return demo.userId().orElseThrow();
+    /** "Try the demo" from {@code b}, from its own client IP (so the per-IP limit only bites where intended). */
+    private ResultActions tryTheDemo(TestBrowser b, String ip) throws Exception {
+        return b.perform(post("/api/auth/demo").with(request -> {
+            request.setRemoteAddr(ip);
+            return request;
+        }));
     }
 
     private ResultActions tryTheDemo() throws Exception {
-        return browser.perform(post("/api/auth/demo"));
+        return tryTheDemo(browser, "198.51.100.1");
+    }
+
+    /** A new visitor (own browser, own IP) who starts a sandbox; returns its user id. */
+    private UUID newVisitor() throws Exception {
+        TestBrowser visitor = new TestBrowser(mvc).fetchCsrf();
+        String body = tryTheDemo(visitor, "203.0.113." + nextIp.getAndIncrement()).andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+        return UUID.fromString(JsonPath.read(body, "$.id"));
+    }
+
+    private UUID sandboxOf(TestBrowser b) throws Exception {
+        String body = b.perform(get("/api/auth/me")).andExpect(status().isOk()).andReturn().getResponse()
+            .getContentAsString();
+        return UUID.fromString(JsonPath.read(body, "$.id"));
+    }
+
+    private int sandboxes() {
+        return jdbc.queryForObject("select count(*) from users where demo", Integer.class);
     }
 
     private int emailJobs() {
         return jdbc.queryForObject("select count(*) from jobs where type = 'SEND_EMAIL'", Integer.class);
     }
 
-    private List<String> demoMonitorUrls() {
-        return jdbc.queryForList("select url from monitors where user_id = ? order by url", String.class, demoId());
+    private List<String> monitorUrls(UUID userId) {
+        return jdbc.queryForList("select url from monitors where user_id = ? order by url", String.class, userId);
     }
 
-    private UUID firstDemoMonitor() {
-        return jdbc.queryForObject("select id from monitors where user_id = ? order by created_at, url limit 1",
-            UUID.class, demoId());
+    private UUID firstMonitor(UUID userId) {
+        return jdbc.queryForObject("select id from monitors where user_id = ? order by url limit 1", UUID.class, userId);
     }
 
-    // ------------------------------------------------------------------ the account and startup
+    private void expire(UUID userId) {
+        jdbc.update("update users set demo_expires_at = now() - interval '1 second' where id = ?", userId);
+    }
+
+    // ------------------------------------------------------------------ startup
 
     @Test
-    void startupCreatesAVerifiedPasswordlessDemoAccountWithSampleMonitorsAndANightlyReset() {
-        Map<String, Object> user = jdbc.queryForMap("select email, password_hash, email_verified from users where demo");
-        assertThat(user.get("email")).isEqualTo(DEMO_EMAIL);
-        assertThat(user.get("password_hash")).isNull();
-        assertThat(user.get("email_verified")).isEqualTo(true);
-        assertThat(demoMonitorUrls()).containsExactly("https://example.com/",
-            "https://raw.githubusercontent.com/SanviShan25/pulsecheck-test/main/status.txt");
-
-        Map<String, Object> reset = jdbc.queryForMap(
+    void startupSchedulesTheCleanupOnce() {
+        startup.onStartup();
+        Map<String, Object> cleanup = jdbc.queryForMap(
             "select type, cron_expression, timezone, enabled, next_run_at from job_schedules where name = ?",
-            DemoAccount.RESET_SCHEDULE_NAME);
-        assertThat(reset.get("type")).isEqualTo(DemoResetJobHandler.TYPE);
-        assertThat(reset.get("cron_expression")).isEqualTo("0 0 4 * * *");
-        assertThat(reset.get("timezone")).isEqualTo("UTC");
-        assertThat(reset.get("enabled")).isEqualTo(true);
-        assertThat(reset.get("next_run_at")).isNotNull();
-    }
-
-    @Test
-    void startupIsIdempotent() {
-        startup.onStartup();
-        startup.onStartup();
-        assertThat(jdbc.queryForObject("select count(*) from users where demo", Integer.class)).isEqualTo(1);
+            DemoAccount.CLEANUP_SCHEDULE_NAME);
+        assertThat(cleanup.get("type")).isEqualTo(DemoCleanupJobHandler.TYPE);
+        assertThat(cleanup.get("cron_expression")).isEqualTo("0 */5 * * * *");
+        assertThat(cleanup.get("timezone")).isEqualTo("UTC");
+        assertThat(cleanup.get("enabled")).isEqualTo(true);
+        assertThat(cleanup.get("next_run_at")).isNotNull();
         assertThat(jdbc.queryForObject("select count(*) from job_schedules where name = ?", Integer.class,
-            DemoAccount.RESET_SCHEDULE_NAME)).isEqualTo(1);
-        assertThat(demoMonitorUrls()).hasSize(2); // not seeded again: the account already has monitors
+            DemoAccount.CLEANUP_SCHEDULE_NAME)).isEqualTo(1);
+        assertThat(sandboxes()).isZero(); // sandboxes are made on demand, not at startup
     }
 
     @Test
-    void theDatabaseRefusesToGiveTheDemoAccountAPassword() {
-        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
-                jdbc.update("update users set password_hash = '{argon2}x' where demo"))
+    void theDatabaseKeepsSandboxesPasswordlessAndExpiring() {
+        UUID id = UUID.randomUUID();
+        assertThatThrownBy(() -> jdbc.update("insert into users (id, email, email_verified, demo, password_hash, "
+            + "demo_expires_at) values (?, 'x@pulsecheck.invalid', true, true, '{argon2}x', now())", id))
             .hasMessageContaining("ck_users_demo_no_password");
+        assertThatThrownBy(() -> jdbc.update("insert into users (id, email, email_verified, demo) "
+            + "values (?, 'y@pulsecheck.invalid', true, true)", id))
+            .hasMessageContaining("ck_users_demo_expiry");
     }
 
-    @Test
-    void startupRefusesWhenANormalAccountOwnsTheDemoAddress() {
-        demo.removeAll(); // also deletes its monitors' schedules (not owned via a foreign key)
-        jdbc.update("insert into users (id, email, email_verified) values (?, ?, true)", UUID.randomUUID(), DEMO_EMAIL);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> startup.onStartup())
-            .isInstanceOf(IllegalStateException.class)
-            .hasMessageContaining("already belongs to a normal account");
-        jdbc.update("delete from users where email = ?", DEMO_EMAIL);
-    }
-
-    // ------------------------------------------------------------------ logging in
+    // ------------------------------------------------------------------ creating a sandbox
 
     @Test
-    void tryTheDemoLogsInAsTheDemoAccountWithANewSessionAndCsrfToken() throws Exception {
+    void tryTheDemoCreatesAPrivateSandboxWithSampleMonitors() throws Exception {
         String csrfBefore = browser.cookies.get("XSRF-TOKEN");
-        tryTheDemo().andExpect(status().isOk())
-            .andExpect(jsonPath("$.email").value(DEMO_EMAIL))
+        String body = tryTheDemo().andExpect(status().isOk())
+            .andExpect(jsonPath("$.email", matchesPattern("demo-[0-9a-f-]{36}@pulsecheck\\.invalid")))
             .andExpect(jsonPath("$.demo").value(true))
             .andExpect(jsonPath("$.emailVerified").value(true))
-            .andExpect(jsonPath("$.monitorLimit").value(5))
+            .andExpect(jsonPath("$.monitorLimit").value(3))
+            .andExpect(jsonPath("$.minIntervalSeconds").value(300))
             .andExpect(jsonPath("$.demoEnabled").value(true))
-            .andExpect(jsonPath("$.signupOpen").value(false));
-        String firstSession = browser.sessionCookie();
-        assertThat(firstSession).isNotNull();
+            .andExpect(jsonPath("$.signupOpen").value(false))
+            .andReturn().getResponse().getContentAsString();
+        assertThat(Instant.parse(JsonPath.read(body, "$.demoExpiresAt")))
+            .isCloseTo(Instant.now().plus(Duration.ofHours(3)), within(Duration.ofMinutes(1)));
+        assertThat(browser.sessionCookie()).isNotNull();
         assertThat(browser.cookies.get("XSRF-TOKEN")).isNotEqualTo(csrfBefore);
 
-        browser.perform(get("/api/auth/me")).andExpect(status().isOk()).andExpect(jsonPath("$.demo").value(true));
+        UUID id = sandboxOf(browser);
+        assertThat(jdbc.queryForObject("select password_hash from users where id = ?", String.class, id)).isNull();
+        assertThat(monitorUrls(id)).containsExactly(SAMPLE_A, SAMPLE_B);
+        assertThat(jdbc.queryForList("select interval_seconds from monitors where user_id = ?", Integer.class, id))
+            .containsOnly(300);
+        assertThat(jdbc.queryForObject("select count(*) from monitors m join job_schedules s on s.id = m.schedule_id "
+            + "where m.user_id = ? and s.enabled and s.type = 'HTTP_CHECK' and s.payload = m.id::text", Integer.class,
+            id)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select count(*) from jobs where type = 'HTTP_CHECK' and status = 'QUEUED' "
+            + "and payload in (select id::text from monitors where user_id = ?)", Integer.class, id)).isEqualTo(2);
         browser.perform(get("/api/monitors")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(2));
+    }
 
-        // Again from the same browser: the session id is rotated, and the old id no longer works.
+    @Test
+    void visitorsCannotSeeEachOthersSandboxes() throws Exception {
         tryTheDemo().andExpect(status().isOk());
-        assertThat(browser.sessionCookie()).isNotEqualTo(firstSession);
-        mvc.perform(get("/api/auth/me").cookie(new jakarta.servlet.http.Cookie(TestBrowser.SESSION_COOKIE, firstSession)))
+        TestBrowser other = new TestBrowser(mvc).fetchCsrf();
+        tryTheDemo(other, "203.0.113.200").andExpect(status().isOk());
+        UUID mine = sandboxOf(browser);
+        UUID theirs = sandboxOf(other);
+        assertThat(mine).isNotEqualTo(theirs);
+
+        browser.postJson("/api/monitors", "{\"name\":\"Mine\",\"url\":\"https://mine.test/\",\"intervalSeconds\":300}")
+            .andExpect(status().isCreated());
+        other.perform(get("/api/monitors")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(2));
+        other.perform(get("/api/monitors/" + firstMonitor(mine))).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void tryingAgainStartsAFreshSandboxAndDeletesThePreviousOne() throws Exception {
+        tryTheDemo().andExpect(status().isOk());
+        UUID first = sandboxOf(browser);
+        String firstSession = browser.sessionCookie();
+
+        tryTheDemo().andExpect(status().isOk());
+        UUID second = sandboxOf(browser);
+        assertThat(second).isNotEqualTo(first);
+        assertThat(browser.sessionCookie()).isNotEqualTo(firstSession); // session id rotated
+        assertThat(jdbc.queryForObject("select count(*) from users where id = ?", Integer.class, first)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from job_schedules where payload in "
+            + "(select id::text from monitors where user_id = ?)", Integer.class, first)).isZero();
+        assertThat(sandboxes()).isEqualTo(1);
+        mvc.perform(get("/api/auth/me").cookie(new Cookie(TestBrowser.SESSION_COOKIE, firstSession)))
             .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void loggingOutDeletesTheSandbox() throws Exception {
+        tryTheDemo().andExpect(status().isOk());
+        UUID id = sandboxOf(browser);
+        browser.perform(post("/api/auth/logout")).andExpect(status().isNoContent());
+        assertThat(sandboxes()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from job_schedules where name like 'monitor:%'", Integer.class))
+            .isZero();
+        assertThat(monitorUrls(id)).isEmpty();
     }
 
     @Test
     void tryTheDemoNeedsTheCsrfToken() throws Exception {
         mvc.perform(post("/api/auth/demo")).andExpect(status().isForbidden())
             .andExpect(jsonPath("$.code").value("csrf_invalid"));
+        assertThat(sandboxes()).isZero();
     }
 
     @Test
@@ -182,18 +244,42 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
             tryTheDemo().andExpect(status().isOk());
         }
         tryTheDemo().andExpect(status().isTooManyRequests()).andExpect(header().exists("Retry-After"));
-        // Another visitor is not affected.
-        TestBrowser other = new TestBrowser(mvc).fetchCsrf();
-        other.perform(post("/api/auth/demo").with(request -> {
-            request.setRemoteAddr("203.0.113.9");
-            return request;
-        })).andExpect(status().isOk());
+        newVisitor(); // another IP is not affected
     }
 
     @Test
-    void theDemoAccountCannotLogInWithAPassword() throws Exception {
-        browser.login(DEMO_EMAIL, "").andExpect(status().isUnauthorized());
-        browser.login(DEMO_EMAIL, "any password at all").andExpect(status().isUnauthorized());
+    void whenAllSandboxesAreInUseTheDemoIsBusy() throws Exception {
+        UUID oldest = newVisitor();
+        for (int i = 0; i < 3; i++) {
+            newVisitor();
+        }
+        TestBrowser late = new TestBrowser(mvc).fetchCsrf();
+        tryTheDemo(late, "192.0.2.50").andExpect(status().isServiceUnavailable())
+            .andExpect(header().exists("Retry-After"))
+            .andExpect(jsonPath("$.code").value("demo_busy"))
+            .andExpect(jsonPath("$.detail").value("The demo is busy. Please try again in a few minutes."));
+        assertThat(sandboxes()).isEqualTo(4);
+
+        // An expired sandbox frees its place even before the cleanup has deleted it.
+        expire(oldest);
+        tryTheDemo(late, "192.0.2.50").andExpect(status().isOk());
+    }
+
+    @Test
+    void anExpiredSandboxIsLoggedOutEvenBeforeCleanup() throws Exception {
+        tryTheDemo().andExpect(status().isOk());
+        expire(sandboxOf(browser));
+        browser.perform(get("/api/auth/me")).andExpect(status().isNoContent());
+        browser.perform(get("/api/monitors")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void sandboxesCannotLogInWithAPassword() throws Exception {
+        tryTheDemo().andExpect(status().isOk());
+        String email = jdbc.queryForObject("select email from users where demo", String.class);
+        TestBrowser stranger = new TestBrowser(mvc).fetchCsrf();
+        stranger.login(email, "").andExpect(status().isUnauthorized());
+        stranger.login(email, "any password at all").andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -204,7 +290,7 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
             .andExpect(jsonPath("$.allowedEmails").doesNotExist());
     }
 
-    // ------------------------------------------------------------------ restrictions
+    // ------------------------------------------------------------------ restrictions and caps
 
     @Test
     void restrictedAccountActionsAreRefusedWithAClearMessage() throws Exception {
@@ -221,7 +307,7 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
             .andExpect(status().isForbidden())
             .andExpect(jsonPath("$.code").value(DemoAccount.RESTRICTED_CODE));
 
-        assertThat(demo.userId()).isPresent();
+        assertThat(sandboxes()).isEqualTo(1);
         browser.perform(get("/api/auth/me")).andExpect(status().isOk()); // still logged in
         assertThat(emailJobs()).isZero();
     }
@@ -229,7 +315,7 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
     @Test
     void extraAlertRecipientsCannotBeManaged() throws Exception {
         tryTheDemo().andExpect(status().isOk());
-        UUID monitor = firstDemoMonitor();
+        UUID monitor = firstMonitor(sandboxOf(browser));
         // A recipient that got there some other way (e.g. a database fix) still can't be resent or removed.
         UUID recipient = UUID.randomUUID();
         jdbc.update("insert into alert_recipients (id, monitor_id, email, status) values (?, ?, 'x@example.com', 'PENDING')",
@@ -250,22 +336,35 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void theDemoAccountMayHaveAtMostFiveMonitors() throws Exception {
+    void aSandboxMayHaveAtMostThreeMonitors() throws Exception {
         tryTheDemo().andExpect(status().isOk());
-        for (int i = 1; i <= 3; i++) {
-            browser.postJson("/api/monitors", "{\"name\":\"Site " + i + "\",\"url\":\"https://site" + i
-                + ".test/\",\"intervalSeconds\":60}").andExpect(status().isCreated());
-        }
-        browser.postJson("/api/monitors", "{\"name\":\"Six\",\"url\":\"https://six.test/\",\"intervalSeconds\":60}")
+        browser.postJson("/api/monitors", "{\"name\":\"Three\",\"url\":\"https://three.test/\",\"intervalSeconds\":300}")
+            .andExpect(status().isCreated());
+        browser.postJson("/api/monitors", "{\"name\":\"Four\",\"url\":\"https://four.test/\",\"intervalSeconds\":300}")
             .andExpect(status().isConflict())
-            .andExpect(jsonPath("$.detail").value(containsString("at most 5 monitors")));
-        assertThat(demoMonitorUrls()).hasSize(5);
+            .andExpect(jsonPath("$.detail").value(containsString("at most 3 monitors")));
+        assertThat(monitorUrls(sandboxOf(browser))).hasSize(3);
     }
 
     @Test
-    void forgotPasswordForTheDemoAddressSendsNothing() throws Exception {
-        browser.postJson("/api/auth/forgot-password", "{\"email\":\"" + DEMO_EMAIL + "\"}")
-            .andExpect(status().isAccepted());
+    void sandboxMonitorsAreCheckedEveryFiveMinutesAtMost() throws Exception {
+        tryTheDemo().andExpect(status().isOk());
+        browser.postJson("/api/monitors", "{\"name\":\"Fast\",\"url\":\"https://fast.test/\",\"intervalSeconds\":60}")
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.detail").value("In the demo, websites can be checked at most every 5 minutes."));
+        UUID sample = firstMonitor(sandboxOf(browser));
+        browser.perform(patch("/api/monitors/" + sample).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"intervalSeconds\":60}")).andExpect(status().isBadRequest());
+        browser.perform(patch("/api/monitors/" + sample).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"intervalSeconds\":900}")).andExpect(status().isOk())
+            .andExpect(jsonPath("$.intervalSeconds").value(900));
+    }
+
+    @Test
+    void forgotPasswordForASandboxAddressSendsNothing() throws Exception {
+        tryTheDemo().andExpect(status().isOk());
+        String email = jdbc.queryForObject("select email from users where demo", String.class);
+        browser.postJson("/api/auth/forgot-password", "{\"email\":\"" + email + "\"}").andExpect(status().isAccepted());
         assertThat(emailJobs()).isZero();
         assertThat(jdbc.queryForObject("select count(*) from auth_tokens", Integer.class)).isZero();
     }
@@ -273,8 +372,8 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
     // ------------------------------------------------------------------ no emails, ever
 
     @Test
-    void outagesOfDemoMonitorsAreRecordedButNotEmailed() {
-        UUID monitor = firstDemoMonitor();
+    void outagesOfSandboxMonitorsAreRecordedButNotEmailed() throws Exception {
+        UUID monitor = firstMonitor(newVisitor());
         String url = jdbc.queryForObject("select url from monitors where id = ?", String.class, monitor);
         sites.script(url, HttpChecker.Outcome.down(500, 30, "HTTP 500"));
         for (int i = 0; i < MonitorCheckService.FAILURES_FOR_DOWN; i++) {
@@ -291,68 +390,54 @@ class DemoModeIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void theOutboxNeverQueuesEmailForTheDemoAddress() {
-        boolean queued = outbox.enqueue(new EmailJob(EmailJob.Template.ALREADY_REGISTERED, "Demo@PulseCheck.invalid",
+    void theOutboxNeverQueuesEmailForASandbox() throws Exception {
+        UUID id = newVisitor();
+        String email = jdbc.queryForObject("select email from users where id = ?", String.class, id);
+        boolean queued = outbox.enqueue(new EmailJob(EmailJob.Template.ALREADY_REGISTERED, email.toUpperCase(),
             Map.of(), "email:test:" + UUID.randomUUID(), null));
         assertThat(queued).isFalse();
         assertThat(emailJobs()).isZero();
     }
 
-    // ------------------------------------------------------------------ nightly reset
+    // ------------------------------------------------------------------ cleanup
 
     @Test
-    void resetPutsBackTheSampleMonitorsAndDeletesEverythingElse() throws Exception {
-        tryTheDemo().andExpect(status().isOk());
-        browser.postJson("/api/monitors", "{\"name\":\"Mine\",\"url\":\"https://mine.test/\",\"intervalSeconds\":60}")
-            .andExpect(status().isCreated());
-        UUID sample = firstDemoMonitor();
-        browser.perform(post("/api/monitors/" + sample + "/pause")).andExpect(status().isOk());
-        checks.runCheck(jdbc.queryForObject("select id from monitors where url = 'https://mine.test/'", UUID.class));
+    void cleanupDeletesExpiredSandboxesWithAllTheirDataAndNothingElse() throws Exception {
+        UUID expired = newVisitor();
+        UUID active = newVisitor();
+        checks.runCheck(firstMonitor(expired));
         assertThat(jdbc.queryForObject("select count(*) from check_results", Integer.class)).isPositive();
-
-        // A normal user's monitor must survive the reset.
-        UUID other = UUID.randomUUID();
-        jdbc.update("insert into users (id, email, email_verified) values (?, 'other@example.com', true)", other);
+        UUID normal = UUID.randomUUID();
+        jdbc.update("insert into users (id, email, email_verified) values (?, 'other@example.com', true)", normal);
         jdbc.update("insert into monitors (id, user_id, name, url, interval_seconds) values (?, ?, 'Other', "
-            + "'https://other.test/', 60)", UUID.randomUUID(), other);
+            + "'https://other.test/', 60)", UUID.randomUUID(), normal);
+        expire(expired);
 
-        handlers.find(DemoResetJobHandler.TYPE).orElseThrow().handle(null);
-        handlers.find(DemoResetJobHandler.TYPE).orElseThrow().handle(null); // idempotent
+        handlers.find(DemoCleanupJobHandler.TYPE).orElseThrow().handle(null);
+        handlers.find(DemoCleanupJobHandler.TYPE).orElseThrow().handle(null); // idempotent
 
-        assertThat(demoMonitorUrls()).containsExactly("https://example.com/",
-            "https://raw.githubusercontent.com/SanviShan25/pulsecheck-test/main/status.txt");
-        assertThat(jdbc.queryForList("select enabled from monitors where user_id = ?", Boolean.class, demoId()))
-            .containsOnly(true);
+        assertThat(jdbc.queryForList("select id from users order by email", UUID.class))
+            .containsExactlyInAnyOrder(active, normal);
+        assertThat(monitorUrls(expired)).isEmpty();
+        assertThat(monitorUrls(active)).hasSize(2);
+        assertThat(monitorUrls(normal)).hasSize(1);
         assertThat(jdbc.queryForObject("select count(*) from check_results", Integer.class)).isZero();
-        assertThat(jdbc.queryForObject("select count(*) from monitors where user_id = ?", Integer.class, other))
-            .isEqualTo(1);
-        // Exactly one schedule per demo monitor, all enabled; the deleted monitors' schedules are gone.
+        // Only the active sandbox's monitor schedules are left.
         assertThat(jdbc.queryForObject("select count(*) from job_schedules where name like 'monitor:%'", Integer.class))
             .isEqualTo(2);
-        assertThat(jdbc.queryForObject("select count(*) from monitors m join job_schedules s on s.id = m.schedule_id "
-            + "where m.user_id = ? and s.enabled and s.type = 'HTTP_CHECK' and s.payload = m.id::text", Integer.class,
-            demoId())).isEqualTo(2);
-        // Each sample monitor gets an immediate check.
-        assertThat(jdbc.queryForObject("select count(*) from jobs where type = 'HTTP_CHECK' and status = 'QUEUED' "
-            + "and payload in (select id::text from monitors where user_id = ?)", Integer.class, demoId()))
-            .isEqualTo(2);
-
-        // Visitors who were logged in stay logged in and see the fresh sample monitors.
-        browser.perform(get("/api/monitors")).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(2))
-            .andExpect(jsonPath("$[*].url", not(org.hamcrest.Matchers.hasItem("https://mine.test/"))));
     }
 
     @Test
-    void theNightlyResetRunsAsARecurringJobOnTheScheduler() throws Exception {
+    void theCleanupRunsAsARecurringJobOnTheScheduler() {
         jdbc.update("update job_schedules set next_run_at = now() - interval '1 second' where name = ?",
-            DemoAccount.RESET_SCHEDULE_NAME);
+            DemoAccount.CLEANUP_SCHEDULE_NAME);
         scheduleRunner.fireDue(Instant.now());
         Map<String, Object> run = jdbc.queryForMap("select type, status from jobs where cron_schedule_id = "
-            + "(select id from job_schedules where name = ?)", DemoAccount.RESET_SCHEDULE_NAME);
-        assertThat(run.get("type")).isEqualTo(DemoResetJobHandler.TYPE);
+            + "(select id from job_schedules where name = ?)", DemoAccount.CLEANUP_SCHEDULE_NAME);
+        assertThat(run.get("type")).isEqualTo(DemoCleanupJobHandler.TYPE);
         assertThat(run.get("status")).isEqualTo("QUEUED");
         Instant next = jdbc.queryForObject("select next_run_at from job_schedules where name = ?", Instant.class,
-            DemoAccount.RESET_SCHEDULE_NAME);
+            DemoAccount.CLEANUP_SCHEDULE_NAME);
         assertThat(next).isAfter(Instant.now());
     }
 

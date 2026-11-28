@@ -84,6 +84,7 @@ public class MonitorService {
             throw ApiProblems.conflict("You already have a monitor for " + url);
         }
         int interval = validInterval(request.intervalSeconds());
+        demo.checkInterval(owner, interval);
 
         Instant now = Instant.now();
         Monitor monitor = new Monitor();
@@ -159,6 +160,8 @@ public class MonitorService {
         }
         if (changes.intervalSeconds() != null && changes.intervalSeconds() != monitor.getIntervalSeconds()) {
             int interval = validInterval(changes.intervalSeconds());
+            demo.checkInterval(users.findById(userId).orElseThrow(() -> ApiProblems.notFound("User not found")),
+                interval);
             monitor.setIntervalSeconds(interval);
             if (monitor.getScheduleId() != null) {
                 schedules.update(monitor.getScheduleId(), cronChange(MonitorSchedules.cronFor(id, interval)));

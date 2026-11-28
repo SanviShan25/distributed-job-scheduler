@@ -49,6 +49,8 @@ class DemoModeOffIntegrationTest extends AbstractIntegrationTest {
         TestBrowser browser = new TestBrowser(mvc).fetchCsrf();
         browser.login("ann@example.com", "a long enough password").andExpect(status().isOk())
             .andExpect(jsonPath("$.demo").value(false))
+            .andExpect(jsonPath("$.demoExpiresAt").doesNotExist())
+            .andExpect(jsonPath("$.minIntervalSeconds").value(60))
             .andExpect(jsonPath("$.monitorLimit").value(10));
         browser.perform(get("/api/auth/me")).andExpect(status().isOk())
             .andExpect(jsonPath("$.demo").value(false))
@@ -57,23 +59,26 @@ class DemoModeOffIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void startupWithDemoModeOffRemovesALeftoverDemoAccountAndItsReset() {
-        UUID demoUser = UUID.randomUUID();
+    void startupWithDemoModeOffRemovesLeftoverSandboxesAndTheCleanup() {
+        UUID sandbox = UUID.randomUUID();
         UUID scheduleId = UUID.randomUUID();
         UUID monitorId = UUID.randomUUID();
-        jdbc.update("insert into users (id, email, email_verified, demo) values (?, 'demo@pulsecheck.invalid', true, true)",
-            demoUser);
+        jdbc.update("insert into users (id, email, email_verified, demo, demo_expires_at) "
+            + "values (?, 'demo-x@pulsecheck.invalid', true, true, now() + interval '1 hour')", sandbox);
         jdbc.update("insert into job_schedules (id, name, cron_expression, type, payload, next_run_at) "
             + "values (?, ?, '0 * * * * *', 'HTTP_CHECK', ?, now())", scheduleId, "monitor:" + monitorId, monitorId.toString());
         jdbc.update("insert into monitors (id, user_id, name, url, interval_seconds, schedule_id) "
-            + "values (?, ?, 'Demo', 'https://example.com/', 60, ?)", monitorId, demoUser, scheduleId);
+            + "values (?, ?, 'Demo', 'https://example.com/', 300, ?)", monitorId, sandbox, scheduleId);
         jdbc.update("insert into job_schedules (id, name, cron_expression, type, next_run_at) "
-            + "values (?, ?, '0 0 4 * * *', 'DEMO_RESET', now())", UUID.randomUUID(), DemoAccount.RESET_SCHEDULE_NAME);
+            + "values (?, ?, '0 */5 * * * *', 'DEMO_CLEANUP', now())", UUID.randomUUID(), DemoAccount.CLEANUP_SCHEDULE_NAME);
+        UUID normal = UUID.randomUUID();
+        jdbc.update("insert into users (id, email, email_verified) values (?, 'ann@example.com', true)", normal);
 
         startup.onStartup();
 
         assertThat(jdbc.queryForObject("select count(*) from users where demo", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from users where id = ?", Integer.class, normal)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from job_schedules where id = ? or name = ?", Integer.class,
-            scheduleId, DemoAccount.RESET_SCHEDULE_NAME)).isZero();
+            scheduleId, DemoAccount.CLEANUP_SCHEDULE_NAME)).isZero();
     }
 }

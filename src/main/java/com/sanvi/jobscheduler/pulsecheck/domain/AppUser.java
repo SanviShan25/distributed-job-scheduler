@@ -25,6 +25,8 @@ public class AppUser {
     private boolean emailVerified;
     @JsonIgnore private int failedLoginCount;
     @JsonIgnore private Instant lockedUntil;
-    /** The shared demo account (demo mode): no password, no emails, restricted. At most one exists. */
+    /** A temporary demo sandbox (demo mode): no password, no emails, restricted. */
     private boolean demo;
+    /** When a demo sandbox is deleted; null for normal accounts. */
+    private Instant demoExpiresAt;
 }

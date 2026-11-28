@@ -9,10 +9,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * At API startup. Demo mode on: makes sure the demo account and its nightly reset schedule exist, and gives the
- * account its sample monitors if it has none (first start). Demo mode off: removes both, so turning demo mode off
- * leaves no password-less account behind. Every step is idempotent and safe when several API instances start at
- * once.
+ * At API startup. Demo mode on: makes sure the recurring cleanup of expired sandboxes is scheduled. Demo mode off:
+ * deletes every sandbox and the cleanup schedule, so turning demo mode off leaves no password-less account behind.
+ * Both are idempotent and safe when several API instances start at once.
  */
 @Component
 @Profile("api")
@@ -28,11 +27,8 @@ public class DemoStartup {
             demo.removeAll();
             return;
         }
-        demo.ensureExists();
-        demo.ensureResetSchedule();
-        if (demo.hasNoMonitors()) {
-            demo.reset();
-        }
-        log.info("Demo mode is on: visitors can try the demo account; it resets on cron '{}' (UTC)", props.resetCron());
+        demo.ensureCleanupSchedule();
+        log.info("Demo mode is on: up to {} sandboxes of {} each, {} monitors at most, checked every {} s or slower",
+            props.maxSandboxes(), props.sandboxLifetime(), props.maxMonitors(), props.minIntervalSeconds());
     }
 }
