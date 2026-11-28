@@ -825,3 +825,30 @@ visitors can't receive verification emails. Demo mode lets them try the app anyw
   and a website's page for the README, the landing page and the link preview. The demo banner is hidden in them
   (it's about the visitor's session, not the product), which needs Playwright's `bypassCSP`; the e2e tests
   themselves run with the CSP enforced and fail on any console error.
+
+### Web app: performance, 404 and titles
+
+- **Lighthouse** (13.6, against the Docker image with its strict CSP): every public page scores 100 for
+  accessibility, best practices and SEO, and 100 for performance on desktop. On Lighthouse's simulated slow-4G
+  phone, performance is 89–91 (home page LCP about 3.7 s). What remains is the single-page-app model itself:
+  nothing appears until about 113 kB (gzipped) of JavaScript, almost all React and React Router, has loaded.
+  Pre-rendering the public pages to HTML at build time would remove that; it is the next step if the score
+  matters. `/forgot-password` and the 404 page score 66 for SEO on purpose (blocked in `robots.txt` and
+  `noindex`), and the back/forward-cache audit fails only under memory pressure on the test machine ("not
+  actionable").
+- **The logged-in pages load on first use** (React Router `lazy` routes): visitors to the home page no longer
+  download the dashboard, the website page or the settings (−84 kB).
+- **The dashboard screenshot loads eagerly with high priority**: on phones it is the largest element in the
+  first screen, so lazy loading delayed the LCP.
+- **Public pages wait for `/api/config` as well as `/api/auth/me`**, fetched in parallel, so they appear once,
+  complete. Before, the "Try the demo" button appeared after the page and pushed it down (layout shift 0.03).
+  Rendering public pages without waiting at all was tried and gave no measurable LCP gain, so it was not kept.
+  The config query does not refetch on mount (`retryOnMount: false`): when it fails, each component reading it
+  would otherwise refetch, which puts a query without data back to "pending", so the guard's spinner and the
+  page took turns forever.
+- **404 page:** its own title, the address that wasn't found, and the useful next step (home and log in, or
+  "Go to your websites" when logged in). The server answers unknown app addresses with 200 (it can't tell app
+  routes apart), so the page adds `<meta name="robots" content="noindex">` while it is shown. The crash page and
+  the development-only style guide are `noindex` too.
+- **Every page has its own title**, checked by a test that walks the route table: a page added without a title
+  check fails it.

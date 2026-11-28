@@ -15,6 +15,7 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 
 ## Contents
 
+- [Try it](#try-it)
 - [Architecture](#architecture)
 - [Job state machine](#job-state-machine)
 - [Delivery guarantee](#delivery-guarantee)
@@ -32,6 +33,34 @@ Features: priorities, retries with exponential backoff and jitter, a dead-letter
 - [Results](#results)
 - [Monitoring](#monitoring)
 - [Known limitations](#known-limitations)
+- [Running on free tiers](#running-on-free-tiers)
+
+---
+
+## Try it
+
+**PulseCheck**, the website uptime monitor built on this scheduler, has a public demo: *link added after
+deployment*.
+
+On the home page, **Try the demo** gives you a private demo account straight away, with no sign-up:
+
+- it starts with two sample websites; you can add one more (3 at most), checked every 5 minutes or less often;
+- outages, uptime and response-time charts work as in a real account, but **no emails are sent**;
+- there is no password, so password changes, account deletion and extra alert recipients aren't offered;
+- only you can see it, and it is **deleted after 3 hours** (or when you choose "End the demo").
+
+On the public demo, sign-ups may be limited to invited addresses (`PULSECHECK_SIGNUP_ALLOWED_EMAILS`), because
+emails can only be delivered to the owner without a verified domain.
+
+**Run it locally with the demo:** set `PULSECHECK_DEMO_ENABLED=true` in `.env`, run `docker compose up --build`,
+and open http://localhost:8080.
+
+![The PulseCheck dashboard: three websites with their status, 24-hour uptime and average response time](docs/images/dashboard.png)
+
+![A website's page: status, address, uptime over 24 hours, 7 days and 30 days, and a 24-hour response-time chart](docs/images/monitor-details.png)
+
+<sub>Screenshots with sample data: 24 hours of generated checks, including one 20-minute outage, captured by
+`npm run e2e:screenshots` (see [Testing](#testing)).</sub>
 
 ---
 
@@ -743,4 +772,21 @@ The ≈31 s matches the design: the killed worker claimed the jobs at ≈14:08:0
 - **Single Redis.** No Redis Cluster/Sentinel configuration is included.
 - **Handler registry is shared.** The API validates `type` against the handlers on its own classpath, so API and workers must ship the same handler set.
 - **API keys are static** (environment config): no per-key scopes, rotation endpoint or key store.
+
+## Running on free tiers
+
+*To be filled in with the deployment.* What this section will cover:
+
+- **Where each part runs:** the API (which also serves the web app), the worker, Postgres and Redis, and on
+  which free plans.
+- **Settings for the public demo:** `PULSECHECK_DEMO_ENABLED=true`, `PULSECHECK_SIGNUP_ALLOWED_EMAILS` (the
+  owner's address), `PULSECHECK_EMAIL_PROVIDER=resend` with `RESEND_API_KEY` and `EMAIL_FROM`,
+  `PULSECHECK_APP_BASE_URL` (the public address), `API_KEYS`, and the database and Redis connection settings.
+- **Behind the host's proxy:** the client IP for the per-IP limits (`server.forward-headers-strategy`, see
+  [Brute-force protection](docs/DESIGN.md#brute-force-protection)), and an absolute `og:image` URL for link
+  previews.
+- **Free-tier limits and what they mean for the demo:** sleeping services, database size and lifetime, and
+  how the demo caps (20 sandboxes, 3 websites each, checks every 5 minutes, 3-hour lifetime) keep within them.
+- **Checking it works:** the end-to-end tests can be pointed at the deployment with `E2E_BASE_URL`.
+
 # distributed-job-scheduler

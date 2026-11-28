@@ -2,6 +2,7 @@ import { Plus } from "lucide-react";
 import { useState } from "react";
 import { Logo } from "../components/Logo";
 import { Alert, Button, Card, Input, Spinner, StatusBadge } from "../components/ui";
+import { usePageTitle } from "../lib/usePageTitle";
 
 const swatches = [
   ["brand-600", "bg-brand-600"],
@@ -17,6 +18,7 @@ const swatches = [
 
 /** Development-only overview of the design system (/styleguide with `npm run dev`). */
 export function StyleguidePage() {
+  usePageTitle("Style guide", undefined, { noindex: true });
   const [loading, setLoading] = useState(false);
 
   return (

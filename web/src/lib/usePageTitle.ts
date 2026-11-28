@@ -14,7 +14,25 @@ const DEFAULT_DESCRIPTION =
  * canonical URL is this page's own address without query or fragment (index.html is served for every
  * route, so it can't carry one).
  */
-export function usePageTitle(title: string, description?: string): void {
+export function usePageTitle(
+  title: string,
+  description?: string,
+  options: { noindex?: boolean } = {},
+): void {
+  const { noindex = false } = options;
+  // Pages that must not appear in search results (e.g. "Page not found", which the server answers with
+  // 200 like every app route): a robots meta tag while the page is shown.
+  useEffect(() => {
+    if (!noindex) return;
+    const meta = document.createElement("meta");
+    meta.name = "robots";
+    meta.content = "noindex";
+    document.head.append(meta);
+    return () => {
+      meta.remove();
+    };
+  }, [noindex]);
+
   useEffect(() => {
     const fullTitle = `${title} · ${SITE_NAME}`;
     document.title = fullTitle;

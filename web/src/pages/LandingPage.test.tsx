@@ -35,6 +35,7 @@ describe("LandingPage", () => {
       expect(features.getByRole("heading", { name })).toBeVisible();
     }
     expect(screen.getByRole("img", { name: /^The PulseCheck dashboard/ })).toBeVisible();
+    expect(screen.getByText("(Screenshot with sample data.)")).toBeVisible();
     expect(screen.getByRole("link", { name: "Source code on GitHub" })).toHaveAttribute(
       "href",
       "https://github.com/SanviShan25/distributed-job-scheduler",

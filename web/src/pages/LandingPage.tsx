@@ -185,7 +185,7 @@ function Section({ id, title, children }: { id: string; title: string; children:
 
 /**
  * The dashboard, captured by the end-to-end screenshot run (npm run e2e:screenshots). Width and height are
- * set so the page doesn't shift while it loads; it's below the fold on phones, so it loads lazily.
+ * set so the page doesn't shift while it loads.
  */
 function DashboardPreview() {
   return (
@@ -194,13 +194,15 @@ function DashboardPreview() {
         src={dashboardScreenshot}
         width={1040}
         height={480}
-        loading="lazy"
+        // On phones this is the largest thing in the first screen, so it loads first, not lazily.
+        fetchPriority="high"
         decoding="async"
         alt="The PulseCheck dashboard: three websites, each with its status (Up), uptime over the last 24 hours and average response time."
         className="h-auto w-full rounded-2xl border border-line shadow-sm"
       />
       <figcaption className="text-center text-sm text-ink-muted">
-        Your dashboard: every website, whether it&apos;s up, and its uptime at a glance.
+        Your dashboard: every website, whether it&apos;s up, and its uptime at a glance.{" "}
+        <span className="text-xs whitespace-nowrap">(Screenshot with sample data.)</span>
       </figcaption>
     </figure>
   );

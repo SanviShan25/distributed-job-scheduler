@@ -15,9 +15,12 @@ export function useAppConfig() {
   return useQuery({
     queryKey: ["config"],
     queryFn: () => api.get<AppConfig>("/api/config"),
-    // Changes only when the site is redeployed.
+    // Changes only when the site is redeployed. Retried like other queries (not on 4xx).
     staleTime: Infinity,
-    retry: 1,
+    // If it failed, the pages go on without it (as if there were no demo). Without this, each component
+    // that reads it would refetch on mount, which puts a query without data back to "pending"; PublicOnly
+    // then shows its spinner, unmounting the page, and the two would loop.
+    retryOnMount: false,
   });
 }
 
