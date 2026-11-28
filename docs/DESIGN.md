@@ -767,3 +767,36 @@ visitors can't receive verification emails. Demo mode lets them try the app anyw
   only on the list), so it can't be used to discover accounts. Nothing is created and no email is sent.
 - **`GET /api/config`** (public) returns `{demoEnabled, signupOpen}` so the logged-out web app can show
   "Try the demo" and explain limited sign-ups. It never exposes the allowlist. `/me` carries the same two switches.
+
+### Web app: demo, limited sign-ups and the landing page
+
+- **What the logged-out app knows comes from `GET /api/config`** (`demoEnabled`, `signupOpen`), cached for the
+  page's lifetime. If it can't be loaded, the app behaves as if there were no demo and sign-ups were open: the
+  sign-up page and the server still explain any limit, so nothing is promised that can't be kept.
+- **"Try the demo"** (landing, login and sign-up pages) posts to `/api/auth/demo` and then works exactly like
+  login: a fresh CSRF token, the user put in the cache, and on to the dashboard. "The demo is busy" (`503`
+  `demo_busy`) is the one server error shown word for word; other 5xx answers keep the generic message.
+- **Inside a demo account** a banner on every page says "This is your private demo. It's deleted after 3 hours"
+  with the time left (from `demoExpiresAt`, updated every 30 seconds, not a live region, so screen readers aren't
+  interrupted). The hours come from `createdAt` to `demoExpiresAt`, so the sentence stays true if the lifetime
+  is configured differently. The generated address is never shown ("Demo account"), and "Log out" says
+  "End the demo", because that deletes it.
+- **Restricted actions are not offered**, rather than offered and then refused: account settings explain that
+  there is no password and the account deletes itself; a website's "Alert emails" card says the demo sends no
+  emails; check intervals faster than `minIntervalSeconds` are shown but disabled, with the reason. The server
+  still enforces all of it.
+- **A new session-end reason, `demo-ended`**: when the time runs out, when the visitor ends the demo, or when a
+  request gets `401` while in a demo, the visitor goes to the home page with "Your demo has ended and its data
+  has been deleted" instead of the login page's "Your session has ended". **The first reason wins:** a `401`
+  only sets `expired` when no reason is set yet, because several requests in flight can all fail with `401`,
+  and the last one must not overwrite "demo ended" or "logged out".
+- **Landing page:** its own full-width layout (header, hero, how it works, features, footer), still behind
+  `PublicOnly`, so logged-in visitors go straight to the dashboard. Semantic landmarks and headings; no inline
+  scripts or styles, so it runs under the strict CSP. The dashboard screenshot is a fixed-size placeholder
+  until the end-to-end tests capture a real one, so the layout won't shift when it arrives.
+- **SEO:** `index.html` has the landing page's title, description and Open Graph tags; `usePageTitle` updates
+  the title, description and their Open Graph copies per page. **The canonical URL and `og:url` are set per
+  page in the app,** not in `index.html`: the same file is served for every route, so a build-time canonical
+  would declare `/login` a duplicate of `/`. `robots.txt` allows `/`, `/login` and `/signup` and disallows
+  `/api/`, the app, the email-link pages (their URLs carry one-time tokens) and the scheduler's endpoints.
+  `og:image` needs a raster image (PNG), which is added with the Playwright screenshots in the next step.

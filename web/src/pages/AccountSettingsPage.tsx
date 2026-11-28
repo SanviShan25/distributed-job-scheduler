@@ -13,15 +13,42 @@ export function AccountSettingsPage() {
   return (
     <div className="flex max-w-2xl flex-col gap-6">
       <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Account settings</h1>
-      <Card title="Your account">
-        <dl className="grid gap-1">
-          <dt className="text-sm text-ink-muted">Email</dt>
-          <dd className="font-semibold break-all">{user?.email}</dd>
-        </dl>
-      </Card>
-      <ChangePasswordCard email={user?.email} />
-      <DeleteAccountCard />
+      {user?.demo ? (
+        <DemoAccountCard signupOpen={user.signupOpen} />
+      ) : (
+        <>
+          <Card title="Your account">
+            <dl className="grid gap-1">
+              <dt className="text-sm text-ink-muted">Email</dt>
+              <dd className="font-semibold break-all">{user?.email}</dd>
+            </dl>
+          </Card>
+          <ChangePasswordCard email={user?.email} />
+          <DeleteAccountCard />
+        </>
+      )}
     </div>
+  );
+}
+
+/** Demo accounts have no password and delete themselves, so those forms would only fail. */
+function DemoAccountCard({ signupOpen }: { signupOpen: boolean }) {
+  return (
+    <Card title="Demo account">
+      <div className="flex flex-col gap-3 text-ink-muted">
+        <p>
+          This is a private demo account. It has no password, so there&apos;s no password to change,
+          and it&apos;s deleted automatically when the demo ends, with all its websites.
+        </p>
+        <p>
+          To delete it now, choose <strong className="text-ink">End the demo</strong> in the account
+          menu.
+        </p>
+        {signupOpen && (
+          <p>Want email alerts for your own websites? End the demo and create a free account.</p>
+        )}
+      </div>
+    </Card>
   );
 }
 

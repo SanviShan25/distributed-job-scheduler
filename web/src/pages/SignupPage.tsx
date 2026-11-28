@@ -2,6 +2,8 @@ import { useState, type SyntheticEvent } from "react";
 import { useNavigate } from "react-router";
 import { ApiError } from "../api/client";
 import { useSignup } from "../auth/account";
+import { useAppConfig } from "../auth/demo";
+import { DemoOffer } from "../demo/DemoOffer";
 import {
   normalizeEmail,
   passwordHint,
@@ -19,6 +21,7 @@ export function SignupPage() {
   usePageTitle("Create an account");
   const navigate = useNavigate();
   const signup = useSignup();
+  const { data: config } = useAppConfig();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors<keyof typeof fieldIds>>({});
@@ -61,6 +64,14 @@ export function SignupPage() {
       description="Free. We'll email you when your website goes down."
     >
       <div className="flex flex-col gap-5">
+        {config?.signupOpen === false && (
+          <Alert variant="info" title="Sign-ups are limited right now">
+            Only invited email addresses can create an account on this site.
+            {config.demoEnabled
+              ? " You can still try everything in a private demo, no sign-up needed."
+              : " If you were invited, sign up with the address you were invited with."}
+          </Alert>
+        )}
         {signup.error && !fieldError && <Alert variant="error">{signup.error.message}</Alert>}
 
         <form noValidate onSubmit={onSubmit} className="flex flex-col gap-4">
@@ -101,6 +112,8 @@ export function SignupPage() {
         <p className="text-ink-muted">
           Already have an account? <TextLink to="/login">Log in</TextLink>
         </p>
+
+        <DemoOffer />
       </div>
     </Card>
   );

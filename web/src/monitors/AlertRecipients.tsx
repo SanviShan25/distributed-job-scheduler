@@ -26,6 +26,30 @@ const STATUS_STYLES: Record<RecipientStatus, { icon: typeof Clock; classes: stri
  */
 export function AlertRecipients({ monitor }: { monitor: Monitor }) {
   const { data: user } = useCurrentUser();
+  if (user?.demo) return <DemoAlertEmails />;
+  return <AlertRecipientsEditor monitor={monitor} ownerEmail={user?.email} />;
+}
+
+/** The demo sends no email at all, so there is nobody to manage. */
+function DemoAlertEmails() {
+  return (
+    <Card title="Alert emails">
+      <Alert variant="info" title="No emails in the demo">
+        In your own account, we email you (and up to {MAX_EXTRA_RECIPIENTS} people you choose) when
+        this website goes down and when it&apos;s back up. The demo doesn&apos;t send emails, but
+        outages still show up on this page and on your dashboard.
+      </Alert>
+    </Card>
+  );
+}
+
+function AlertRecipientsEditor({
+  monitor,
+  ownerEmail,
+}: {
+  monitor: Monitor;
+  ownerEmail: string | undefined;
+}) {
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // After "Remove", the row and its focused button disappear; focus moves to the message instead of
@@ -63,7 +87,7 @@ export function AlertRecipients({ monitor }: { monitor: Monitor }) {
         <ul className="flex flex-col divide-y divide-line rounded-xl border border-line">
           <li className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-4">
             <div className="min-w-0">
-              <p className="font-semibold break-all">{user?.email ?? "Your email address"}</p>
+              <p className="font-semibold break-all">{ownerEmail ?? "Your email address"}</p>
               <p className="text-sm text-ink-muted">You (account owner)</p>
             </div>
             {monitor.notifyOwner ? (

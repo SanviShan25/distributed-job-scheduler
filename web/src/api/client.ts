@@ -32,6 +32,10 @@ export interface ProblemDetail {
 
 /** ProblemDetail `code` of a CSRF rejection (SecurityConfig.CSRF_INVALID_CODE on the backend). */
 export const CSRF_INVALID_CODE = "csrf_invalid";
+/** Every demo sandbox is in use (503). */
+export const DEMO_BUSY_CODE = "demo_busy";
+/** The action isn't available to a demo account (403, DemoAccount.RESTRICTED_CODE). */
+export const DEMO_RESTRICTED_CODE = "demo_restricted";
 
 export class ApiError extends Error {
   /** HTTP status, or 0 when the server could not be reached. */
@@ -46,6 +50,8 @@ export class ApiError extends Error {
    */
   readonly problemTitle: string | undefined;
   readonly problemDetail: string | undefined;
+  /** The backend's machine-readable ProblemDetail `code`, e.g. "demo_restricted". */
+  readonly code: string | undefined;
 
   constructor(
     message: string,
@@ -63,6 +69,7 @@ export class ApiError extends Error {
     this.fieldErrors = extra.fieldErrors ?? {};
     this.problemTitle = extra.problem?.title;
     this.problemDetail = extra.problem?.detail;
+    this.code = extra.problem?.code;
   }
 }
 
@@ -91,7 +98,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   const problem = await readProblem(response);
   if (response.status === 401 && options.on401 !== "error") {
-    sessionEnd.set("expired");
+    // Several requests in flight can all get a 401. Only the first sets the reason, so a late one
+    // can't turn "your demo has ended" or "you've been logged out" into "your session has ended".
+    if (sessionEnd.get() === null) sessionEnd.set("expired");
     throw new ApiError("Your session has ended. Please log in again.", 401);
   }
   throw toApiError(response, problem);
@@ -249,6 +258,10 @@ function toApiError(response: Response, problem: ProblemDetail): ApiError {
     );
   }
 
+  // "The demo is busy. Please try again in a few minutes." is written for visitors: show it as is.
+  if (status === 503 && problem.code === DEMO_BUSY_CODE && problem.detail) {
+    return new ApiError(problem.detail, status, { problem });
+  }
   if (status >= 500) {
     return new ApiError("Something went wrong on our side. Please try again in a moment.", status);
   }

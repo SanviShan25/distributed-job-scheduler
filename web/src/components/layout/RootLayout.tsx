@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { Outlet } from "react-router";
 import { refreshCsrfToken } from "../../api/client";
 import { sessionEnd } from "../../auth/session";
-import { clearPrivateData } from "../../auth/user";
+import { clearPrivateData, meQueryKey, type User } from "../../auth/user";
 
 export function RootLayout() {
   const queryClient = useQueryClient();
@@ -19,7 +19,12 @@ export function RootLayout() {
   useEffect(
     () =>
       sessionEnd.subscribe(() => {
-        if (sessionEnd.get() === "expired") clearPrivateData(queryClient);
+        if (sessionEnd.get() !== "expired") return;
+        // A demo account's session ends when the demo does: say so, rather than "please log in".
+        if (queryClient.getQueryData<User | null>(meQueryKey)?.demo) {
+          sessionEnd.set("demo-ended"); // notifies this listener again, which then does nothing
+        }
+        clearPrivateData(queryClient);
       }),
     [queryClient],
   );

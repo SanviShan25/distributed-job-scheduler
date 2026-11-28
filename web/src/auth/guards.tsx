@@ -22,6 +22,9 @@ export function RequireAuth() {
     if (endReason === "account-deleted") {
       return <Navigate to="/login" replace state={{ accountDeleted: true }} />;
     }
+    if (endReason === "demo-ended") {
+      return <Navigate to="/" replace state={{ demoEnded: true }} />;
+    }
     const here = location.pathname + location.search + location.hash;
     return (
       <Navigate
@@ -34,7 +37,7 @@ export function RequireAuth() {
   return <Outlet />;
 }
 
-/** Login, sign-up and the home page: logged-in users go straight on to the app. */
+/** Login, sign-up and the home page: logged-in users go straight on to the app (or ?next=). */
 export function PublicOnly() {
   const { data: user, isPending } = useCurrentUser();
   const [params] = useSearchParams();

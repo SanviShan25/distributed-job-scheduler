@@ -1,9 +1,10 @@
 import { useId, useState, type ReactNode, type SyntheticEvent } from "react";
 import { Alert, Button, Input } from "../components/ui";
+import { useCurrentUser } from "../auth/user";
 import { cn } from "../lib/cn";
 import { focusFirstError, hasErrors, type FieldErrors } from "../lib/forms";
 import { monitorFormError, type MonitorFormError } from "./errors";
-import type { MonitorInput } from "./monitors";
+import { formatInterval, type MonitorInput } from "./monitors";
 import {
   DEFAULT_INTERVAL,
   hasScheme,
@@ -154,35 +155,55 @@ function IntervalField({
   error: string | undefined;
 }) {
   const errorId = useId();
+  const noteId = useId();
+  // Demo accounts may not check more often than every 5 minutes; faster choices are shown, disabled.
+  const { data: user } = useCurrentUser();
+  const minimum = user?.minIntervalSeconds ?? 0;
+  const limited = INTERVALS.some((option) => option.seconds < minimum);
+  const describedBy = [limited ? noteId : null, error ? errorId : null].filter(Boolean).join(" ");
   return (
-    <fieldset aria-describedby={error ? errorId : undefined} className="flex flex-col gap-1.5">
+    <fieldset aria-describedby={describedBy || undefined} className="flex flex-col gap-1.5">
       <legend className="mb-1.5 text-sm font-semibold text-ink">How often should we check?</legend>
+      {limited && (
+        <p id={noteId} className="-mt-1 mb-1 text-sm text-ink-muted">
+          In the demo, the fastest choice is {formatInterval(minimum).toLowerCase()}.
+        </p>
+      )}
       <div className="grid gap-2 sm:grid-cols-2">
-        {INTERVALS.map((option) => (
-          <label
-            key={option.seconds}
-            htmlFor={idFor(option.seconds)}
-            className={cn(
-              "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border px-3.5 py-2",
-              value === option.seconds
-                ? "border-brand-600 bg-brand-50 font-semibold"
-                : "border-line-strong bg-surface",
-            )}
-          >
-            <input
-              type="radio"
-              id={idFor(option.seconds)}
-              name={idFor(0)}
-              value={option.seconds}
-              checked={value === option.seconds}
-              onChange={() => {
-                onChange(option.seconds);
-              }}
-              className="size-4 accent-brand-600"
-            />
-            {option.label}
-          </label>
-        ))}
+        {INTERVALS.map((option) => {
+          const unavailable = option.seconds < minimum;
+          return (
+            <label
+              key={option.seconds}
+              htmlFor={idFor(option.seconds)}
+              className={cn(
+                "flex min-h-11 items-center gap-3 rounded-lg border px-3.5 py-2",
+                unavailable
+                  ? "cursor-not-allowed border-line bg-canvas text-ink-muted"
+                  : "cursor-pointer",
+                !unavailable &&
+                  (value === option.seconds
+                    ? "border-brand-600 bg-brand-50 font-semibold"
+                    : "border-line-strong bg-surface"),
+              )}
+            >
+              <input
+                type="radio"
+                id={idFor(option.seconds)}
+                name={idFor(0)}
+                value={option.seconds}
+                disabled={unavailable}
+                checked={value === option.seconds}
+                onChange={() => {
+                  onChange(option.seconds);
+                }}
+                className="size-4 accent-brand-600"
+              />
+              {option.label}
+              {unavailable && <span className="sr-only">{", not available in the demo"}</span>}
+            </label>
+          );
+        })}
       </div>
       {error && (
         <p id={errorId} className="text-sm font-medium text-down-700">

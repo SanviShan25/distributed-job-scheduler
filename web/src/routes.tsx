@@ -8,7 +8,7 @@ import { AddMonitorPage } from "./pages/AddMonitorPage";
 import { CheckInboxPage } from "./pages/CheckInboxPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
-import { HomePage } from "./pages/HomePage";
+import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MonitorPage } from "./pages/MonitorPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -40,10 +40,11 @@ export const routes: RouteObject[] = [
         // Logged-in users skip these and go to the app.
         element: <PublicOnly />,
         children: [
+          // The landing page has its own full-width layout.
+          { index: true, element: <LandingPage /> },
           {
             element: <AuthLayout />,
             children: [
-              { index: true, element: <HomePage /> },
               { path: "login", element: <LoginPage /> },
               { path: "signup", element: <SignupPage /> },
             ],
