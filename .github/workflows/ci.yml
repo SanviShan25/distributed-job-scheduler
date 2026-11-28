@@ -61,3 +61,51 @@ jobs:
 
       - name: Build the Docker image
         run: docker build --tag pulsecheck:ci .
+
+  # A real browser against the whole stack (the image, Postgres, Redis, a worker) with demo mode on and
+  # emails written to the log. Separate from the other jobs: it needs the image built and the stack started.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Start the stack (demo mode on, emails to the log)
+        run: e2e/stack/stack.sh up
+
+      - name: End-to-end tests
+        run: npm run e2e
+
+      - name: Stack logs
+        if: failure()
+        run: e2e/stack/stack.sh logs
+
+      - name: Upload the Playwright report and traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
+
+      - name: Stop the stack
+        if: always()
+        run: e2e/stack/stack.sh down

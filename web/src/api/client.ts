@@ -131,6 +131,9 @@ export function refreshCsrfToken(): Promise<void> {
         headers: { Accept: "application/json" },
       });
       if (!response.ok) throw toApiError(response, await readProblem(response));
+      // Only the cookie matters, but read the body anyway: an unread body keeps the request open, so
+      // the page never counts as finished loading (e.g. for Lighthouse).
+      await response.text();
     } catch (error) {
       throw error instanceof ApiError ? error : networkError();
     } finally {

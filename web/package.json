@@ -15,7 +15,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "playwright test --project=e2e",
+    "e2e:screenshots": "playwright test --project=screenshots",
+    "e2e:stack:up": "e2e/stack/stack.sh up",
+    "e2e:stack:down": "e2e/stack/stack.sh down"
   },
   "dependencies": {
     "@tanstack/react-query": "5.107.1",
@@ -28,6 +32,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.65.1",
     "@tailwindcss/vite": "4.3.5",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "7.0.1",

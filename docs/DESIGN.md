@@ -800,3 +800,28 @@ visitors can't receive verification emails. Demo mode lets them try the app anyw
   would declare `/login` a duplicate of `/`. `robots.txt` allows `/`, `/login` and `/signup` and disallows
   `/api/`, the app, the email-link pages (their URLs carry one-time tokens) and the scheduler's endpoints.
   `og:image` needs a raster image (PNG), which is added with the Playwright screenshots in the next step.
+
+### End-to-end tests (Playwright)
+
+- **Against the real stack, not a dev server:** the Docker image (Spring Boot serving the built app under the
+  strict CSP), Postgres, Redis and a worker, as their own Compose project (`pulsecheck-e2e`) with their own
+  settings file (`web/e2e/stack/e2e.env`, no secrets) and volumes, so they never touch a developer's `.env` or
+  data. Demo mode is on and email goes to the log, as on the public demo.
+- **Always from empty data** (`stack.sh up` deletes the old volumes first), and every demo test ends its demo
+  afterwards: leftover demos and rate-limit counters from earlier runs had filled the 20-demo cap and the 5/hour
+  sign-up limit, so reruns failed for reasons that had nothing to do with the code. The stack also raises the
+  demo-login and sign-up limits.
+- **No durability in the test stack:** Postgres runs with `fsync=off`, Redis without AOF. Docker Desktop's
+  disk sometimes stalls for tens of seconds (Redis logged "AOF fsync is taking too long"), which froze every
+  write in the API and the worker and timed tests out. The data is thrown away after each run anyway.
+- **One test at a time.** In parallel, the browsers competed for CPU with two still-warming-up JVMs (JIT alone
+  used several cores), and API calls that normally take milliseconds took seconds. The suite takes under a minute
+  serially, and a CI runner only has 4 cores.
+- **The checks are real:** the worker visits example.com, example.org and the test status page, so the tests
+  need internet access (CI runners have it). Waits are bounded; the chart is awaited by reloading, since the page
+  refreshes it only once a minute.
+- **Screenshots** (`npm run e2e:screenshots`) start a demo, add a third website, write 24 hours of sample check
+  history (with one 20-minute outage) for that demo straight into the test database, and capture the dashboard
+  and a website's page for the README, the landing page and the link preview. The demo banner is hidden in them
+  (it's about the visitor's session, not the product), which needs Playwright's `bypassCSP`; the e2e tests
+  themselves run with the CSP enforced and fail on any console error.

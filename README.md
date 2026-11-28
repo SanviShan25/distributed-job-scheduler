@@ -640,7 +640,30 @@ The handler must be on the classpath of both the API (which validates `type`) an
 cd web && npm test   # web app tests (see Web app)
 ```
 
-CI also lints, tests and builds `web/`, and builds the Docker image.
+CI also lints, tests and builds `web/`, builds the Docker image, and runs the end-to-end tests.
+
+**End-to-end tests** (Playwright, in `web/e2e/`) run a real browser against the whole stack: the Docker image
+serving the web app, Postgres, Redis and a worker, with demo mode on and emails written to the log. They
+cover: home page → "Try the demo" → add a website → see it on the dashboard → its page and chart → pause and
+resume → delete; restricted actions not being offered in the demo; demos being private to each visitor;
+ending a demo; logged-out visitors being sent to log in; limited sign-ups; and the page running under the
+strict Content-Security-Policy without errors. The worker really checks the websites, so they need internet
+access.
+
+```bash
+cd web
+npx playwright install chromium   # once
+npm run e2e:stack:up              # builds and starts its own Compose project (pulsecheck-e2e) on :8080
+npm run e2e
+npm run e2e:stack:down            # stops it and deletes its data
+```
+
+The stack uses `web/e2e/stack/e2e.env`, not your `.env`, and its own volumes, so it never touches your
+development data. Stop a development stack first if it is using port 8080.
+
+`npm run e2e:screenshots` (same stack) captures `docs/images/dashboard.png`, `docs/images/monitor-details.png`,
+the landing page's dashboard image and the link-preview image (`web/public/og-image.png`). It writes 24 hours of
+sample check history (with one short outage) into that run's own demo, so the charts have something to show.
 
 Integration tests start throw-away `postgres:16` and `redis:7` containers through Testcontainers `@ServiceConnection`; no local Postgres or Redis is needed. Background `@Scheduled` tasks are disabled in tests (`scheduler.scheduling-enabled=false`) so tests can call the sweeps deterministically. Coverage includes:
 

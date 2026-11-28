@@ -34,9 +34,7 @@ describe("LandingPage", () => {
     ]) {
       expect(features.getByRole("heading", { name })).toBeVisible();
     }
-    expect(
-      screen.getByRole("img", { name: /Screenshot of the PulseCheck dashboard/ }),
-    ).toBeVisible();
+    expect(screen.getByRole("img", { name: /^The PulseCheck dashboard/ })).toBeVisible();
     expect(screen.getByRole("link", { name: "Source code on GitHub" })).toHaveAttribute(
       "href",
       "https://github.com/SanviShan25/distributed-job-scheduler",
@@ -57,6 +55,10 @@ describe("LandingPage", () => {
     expect(document.querySelector('meta[property="og:url"]')).toHaveAttribute(
       "content",
       "http://localhost:5173/",
+    );
+    expect(document.querySelector('meta[property="og:image"]')).toHaveAttribute(
+      "content",
+      "http://localhost:5173/og-image.png",
     );
   });
 

@@ -7,7 +7,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-  globalIgnores(["dist", "coverage"]),
+  globalIgnores(["dist", "coverage", "test-results", "playwright-report"]),
   {
     files: ["**/*.{ts,tsx}"],
     extends: [
@@ -27,6 +27,14 @@ export default defineConfig([
     },
     rules: {
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
+    },
+  },
+  {
+    // Playwright tests run in Node; "use" in fixtures is Playwright's, not a React hook.
+    files: ["e2e/**", "playwright.config.ts"],
+    languageOptions: { globals: globals.node },
+    rules: {
+      "react-hooks/rules-of-hooks": "off",
     },
   },
   {

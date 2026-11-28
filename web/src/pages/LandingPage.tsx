@@ -1,4 +1,5 @@
-import { BellRing, ChartLine, LayoutDashboard, LockKeyhole, Timer } from "lucide-react";
+import { BellRing, ChartLine, LockKeyhole, Timer } from "lucide-react";
+import dashboardScreenshot from "../assets/dashboard.png";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import { useAppConfig } from "../auth/demo";
@@ -183,20 +184,21 @@ function Section({ id, title, children }: { id: string; title: string; children:
 }
 
 /**
- * Where the dashboard screenshot goes. A placeholder until the end-to-end tests capture a real one
- * (docs/images/), so the page layout doesn't shift when it arrives.
+ * The dashboard, captured by the end-to-end screenshot run (npm run e2e:screenshots). Width and height are
+ * set so the page doesn't shift while it loads; it's below the fold on phones, so it loads lazily.
  */
 function DashboardPreview() {
   return (
     <figure className="flex flex-col gap-3">
-      <div
-        role="img"
-        aria-label="Screenshot of the PulseCheck dashboard (coming soon)"
-        className="flex aspect-[16/10] w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-line-strong bg-surface text-ink-muted"
-      >
-        <LayoutDashboard aria-hidden="true" className="size-12" />
-        <span className="font-semibold">Dashboard screenshot</span>
-      </div>
+      <img
+        src={dashboardScreenshot}
+        width={1040}
+        height={480}
+        loading="lazy"
+        decoding="async"
+        alt="The PulseCheck dashboard: three websites, each with its status (Up), uptime over the last 24 hours and average response time."
+        className="h-auto w-full rounded-2xl border border-line shadow-sm"
+      />
       <figcaption className="text-center text-sm text-ink-muted">
         Your dashboard: every website, whether it&apos;s up, and its uptime at a glance.
       </figcaption>

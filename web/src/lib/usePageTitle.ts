@@ -24,6 +24,8 @@ export function usePageTitle(title: string, description?: string): void {
     const url = window.location.origin + window.location.pathname;
     upsert("link", "rel", "canonical", "href", url);
     upsert("meta", "property", "og:url", "content", url);
+    // Open Graph wants an absolute image URL; index.html can only say "/og-image.png".
+    upsert("meta", "property", "og:image", "content", `${window.location.origin}/og-image.png`);
   }, [title, description]);
 }
 
